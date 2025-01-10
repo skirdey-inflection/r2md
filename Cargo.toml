@@ -1,0 +1,10 @@
+[package]
+name = "r2md"
+version = "0.2.0"
+edition = "2021"
+
+[dependencies]
+ignore = "0.4"
+walkdir = "2.3.2"
+regex = "1.7.0"
+clap = "4.2.4"
