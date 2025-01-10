@@ -1,0 +1,118 @@
+name: Build and Release Binaries
+
+on:
+  # Trigger on pushing a tag that starts with 'v', e.g. 'v1.0.0'
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  # ---------------------------
+  # 1) Build for all targets
+  # ---------------------------
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - x86_64-pc-windows-gnu
+          - x86_64-apple-darwin
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v3
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build (${{ matrix.target }})
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Prepare artifacts
+        # We'll store each platform's binary in a folder named after the target triple
+        run: |
+          mkdir -p artifacts/${{ matrix.target }}
+          # If the target is Windows, the binary will have an .exe extension by default
+          if [[ "${{ matrix.target }}" == *"windows-gnu" ]]; then
+            cp target/${{ matrix.target }}/release/my-crate.exe artifacts/${{ matrix.target }}/my-crate.exe
+          else
+            cp target/${{ matrix.target }}/release/my-crate artifacts/${{ matrix.target }}/my-crate
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v2
+        with:
+          name: ${{ matrix.target }}
+          path: artifacts/${{ matrix.target }}
+
+  # ---------------------------
+  # 2) Create GitHub Release
+  #    and upload binaries
+  # ---------------------------
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v2
+        with:
+          name: x86_64-unknown-linux-gnu
+          path: artifacts/x86_64-unknown-linux-gnu
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v2
+        with:
+          name: x86_64-pc-windows-gnu
+          path: artifacts/x86_64-pc-windows-gnu
+
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v2
+        with:
+          name: x86_64-apple-darwin
+          path: artifacts/x86_64-apple-darwin
+
+      - name: Create/Update Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Tag name is the same as the pushed tag, e.g. 'v1.0.0'
+          tag_name: ${{ github.ref_name }}
+          release_name: ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+
+      - name: Upload Linux Binary
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: artifacts/x86_64-unknown-linux-gnu/my-crate
+          asset_name: my-crate-x86_64-unknown-linux-gnu
+          asset_content_type: application/octet-stream
+
+      - name: Upload Windows Binary
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: artifacts/x86_64-pc-windows-gnu/my-crate.exe
+          asset_name: my-crate-x86_64-pc-windows-gnu.exe
+          asset_content_type: application/octet-stream
+
+      - name: Upload macOS Binary
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: artifacts/x86_64-apple-darwin/my-crate
+          asset_name: my-crate-x86_64-apple-darwin
+          asset_content_type: application/octet-stream
