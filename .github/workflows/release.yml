@@ -85,15 +85,15 @@ jobs:
           path: artifacts/x86_64-apple-darwin
 
       - name: Create/Update Release
-        id: create_release
-        uses: actions/create-release@v1
+        uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{ github.ref_name }}
-          release_name: ${{ github.ref_name }}
-          draft: false
+          name: ${{ github.ref_name }}
           prerelease: false
+  
+
 
       - name: Upload Linux Binary
         uses: svenstaro/upload-release-action@v2
