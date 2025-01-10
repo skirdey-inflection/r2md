@@ -64,6 +64,7 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    permissions: write-all
     steps:
       - name: Download Linux artifact
         uses: actions/download-artifact@v3
