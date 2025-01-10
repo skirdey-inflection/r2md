@@ -18,11 +18,7 @@ jobs:
           - x86_64-unknown-linux-gnu
           - x86_64-pc-windows-gnu
           - x86_64-apple-darwin
-        os:
-          - ubuntu-latest
-          - ubuntu-latest
-          - macos-latest
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.target == 'x86_64-apple-darwin' && 'macos-latest' || 'ubuntu-latest' }}
     steps:
       - name: Check out code
         uses: actions/checkout@v4
@@ -34,13 +30,13 @@ jobs:
         if: matrix.target != 'x86_64-apple-darwin'
         run: cargo install cross --git https://github.com/cross-rs/cross
 
-      - name: Build for Linux and Windows
-        if: matrix.target != 'x86_64-apple-darwin'
-        run: cross build --release --target ${{ matrix.target }}
-
-      - name: Build for macOS
-        if: matrix.target == 'x86_64-apple-darwin'
-        run: cargo build --release --target ${{ matrix.target }}
+      - name: Build
+        run: |
+          if [ "${{ matrix.target }}" == "x86_64-apple-darwin" ]; then
+            cargo build --release --target ${{ matrix.target }}
+          else
+            cross build --release --target ${{ matrix.target }}
+          fi
 
       - name: Prepare artifacts
         run: |
