@@ -4,7 +4,8 @@ version = "0.2.0"
 edition = "2021"
 
 [dependencies]
-ignore = "0.4"
-walkdir = "2.3.2"
-regex = "1.7.0"
-clap = "4.2.4"
+ignore = "0.4.23"
+walkdir = "2.5.0"
+regex = "1.11.1"
+clap = "4.5.26"
+printpdf = "0.7.0"
