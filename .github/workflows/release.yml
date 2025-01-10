@@ -36,9 +36,9 @@ jobs:
         run: |
           mkdir -p artifacts/${{ matrix.target }}
           if [[ "${{ matrix.target }}" == *"windows-gnu" ]]; then
-            cp target/${{ matrix.target }}/release/my-crate.exe artifacts/${{ matrix.target }}/my-crate.exe
+            cp target/${{ matrix.target }}/release/r2md.exe artifacts/${{ matrix.target }}/r2md.exe
           else
-            cp target/${{ matrix.target }}/release/my-crate artifacts/${{ matrix.target }}/my-crate
+            cp target/${{ matrix.target }}/release/r2md artifacts/${{ matrix.target }}/r2md
           fi
 
       - name: Upload artifacts
@@ -88,19 +88,19 @@ jobs:
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: artifacts/x86_64-unknown-linux-gnu/my-crate
-          asset_name: my-crate-x86_64-unknown-linux-gnu
+          file: artifacts/x86_64-unknown-linux-gnu/r2md
+          asset_name: r2md-x86_64-unknown-linux-gnu
 
       - name: Upload Windows Binary
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: artifacts/x86_64-pc-windows-gnu/my-crate.exe
-          asset_name: my-crate-x86_64-pc-windows-gnu.exe
+          file: artifacts/x86_64-pc-windows-gnu/r2md.exe
+          asset_name: r2md-x86_64-pc-windows-gnu.exe
 
       - name: Upload macOS Binary
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: artifacts/x86_64-apple-darwin/my-crate
-          asset_name: my-crate-x86_64-apple-darwin
+          file: artifacts/x86_64-apple-darwin/r2md
+          asset_name: r2md-x86_64-apple-darwin

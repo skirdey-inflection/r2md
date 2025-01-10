@@ -9,3 +9,7 @@ walkdir = "2.5.0"
 regex = "1.11.1"
 clap = "4.5.26"
 printpdf = "0.7.0"
+
+[[bin]]
+name = "r2md"
+path = "src/main.rs"
