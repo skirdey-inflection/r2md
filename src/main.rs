@@ -11,6 +11,14 @@ use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
+mod training; // at the top
+use crate::training::produce_training_json;
+
+mod parse;
+mod types;
+
+use types::FileEntry;
+
 /// Keep the original ~20 recognized language extensions (focusing on text-based code)
 static RECOGNIZED_EXTENSIONS: &[&str] = &[
     // Rust
@@ -76,13 +84,6 @@ struct R2mdConfig {
     ignore_patterns: Vec<String>,
 }
 
-/// Basic representation of a recognized file
-#[derive(Debug)]
-struct FileEntry {
-    rel_path: String,
-    content: String,
-}
-
 fn main() -> Result<(), Box<dyn Error>> {
     let matches = Command::new("r2md")
         .version("0.6.0")
@@ -114,6 +115,13 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .long("debug")
                 .help("Enable debug output")
                 .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("train-json")
+                .long("train-json")
+                .value_name("FILE")
+                .help("Write JSON training data to FILE (prompt+completion pairs)")
+                .required(false),
         )
         .get_matches();
 
@@ -202,6 +210,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         };
         write_pdf_file(&all_files, &directories, &pdf_name)?;
         println!("PDF exported to {}", pdf_name);
+    }
+
+    if let Some(json_path) = matches.get_one::<String>("train-json") {
+        // We'll produce naive prompt+completion pairs for each file
+        produce_training_json(&all_files, json_path)?;
     }
 
     Ok(())
@@ -338,9 +351,10 @@ fn collect_files(
     user_ignores: &[String],
     debug: bool,
 ) -> Result<Vec<FileEntry>, Box<dyn Error>> {
-    let mut files = Vec::new();
+    let mut entries = Vec::new();
+
     if !dir.is_dir() {
-        return Ok(files);
+        return Ok(entries);
     }
 
     let walker = WalkBuilder::new(dir)
@@ -352,32 +366,58 @@ fn collect_files(
         .build();
 
     for entry in walker {
-        if let Ok(ent) = entry {
-            let p = ent.path();
-            if p.is_dir() && should_skip_folder(p) {
-                continue;
-            }
-            if should_skip_file(p, user_ignores, debug) {
-                continue;
-            }
+        let ent = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let path = ent.path();
+        if path.is_dir() && should_skip_folder(path) {
+            continue;
+        }
+        if should_skip_file(path, user_ignores, debug) {
+            continue;
+        }
 
-            match fs::read_to_string(p) {
-                Ok(content) => {
-                    let rel = make_relative(dir, p);
-                    files.push(FileEntry {
-                        rel_path: rel,
-                        content,
+        // Attempt read
+        match fs::read_to_string(path) {
+            Ok(content) => {
+                // 1) We'll parse the file into multiple CodeChunk objects
+                let ext = path
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+
+                let code_chunks = parse::parse_file_to_chunks(&content, &ext);
+
+                // 2) For each chunk, we create a separate FileEntry
+                // We'll append something like `:chunkN` if there's >1 chunk
+                // or just store it directly if there's only 1.
+                for (i, chunk) in code_chunks.into_iter().enumerate() {
+                    let rel_path = make_relative(dir, path);
+                    let effective_name = if i == 0 {
+                        // first chunk, keep the original name
+                        rel_path.clone()
+                    } else {
+                        // add suffix
+                        format!("{} (part {})", rel_path, i)
+                    };
+
+                    entries.push(FileEntry {
+                        rel_path: effective_name,
+                        content: chunk.text, // The chunk text
                     });
                 }
-                Err(e) => {
-                    if debug {
-                        eprintln!("Skipping unreadable file {}: {}", p.display(), e);
-                    }
+            }
+            Err(e) => {
+                if debug {
+                    eprintln!("Skipping unreadable file {}: {}", path.display(), e);
                 }
             }
         }
     }
-    Ok(files)
+
+    Ok(entries)
 }
 
 /// Convert path->string relative to `base`, always using forward slashes
