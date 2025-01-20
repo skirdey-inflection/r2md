@@ -1,101 +1,141 @@
-# r2md
+# r2md - Repository to Markdown
 
-A Rust-based command-line tool that scans a local repository, extracts **just the code** files (for ~20 popular languages), and produces a single **Markdown** file.
-It helps you ignore common dependency folders (e.g., `node_modules`, `venv`, `target`) and dotfiles while preserving the essential directory structure and file contents. Useful for quickly sharing or analyzing a project in a single file, or for feeding that file to Large Language Models (LLMs).
+**r2md** is a command-line tool that aggregates code from one or more directories into a single Markdown file. It provides a convenient way to document the structure and contents of your codebase. Optionally, it can also generate a basic PDF representation of the collected code.
 
-## What Problem Does It Solve?
+## Features
 
-1. **Single-File Snapshot**: Gather all code (excluding dependencies) in one Markdown for easy review or sharing.  
-2. **Automated Filtering**: Respects `.gitignore`, common hidden folders, and typical dependency directories to **avoid clutter**.  
-3. **Cross-Language Support**: Recognizes ~20 popular programming languages (by file extension) and ignores the rest.  
-4. **Convenient Output**: Generate Markdown for easy reading, without manual or complicated steps.
+*   **Directory Structure:**  Generates a tree-like representation of the input directories in the Markdown output.
+*   **Code Inclusion:** Includes the content of recognized source code files within Markdown code blocks.
+*   **File Recognition:**  Recognizes a wide range of programming language files based on their extensions (e.g., `.rs`, `.py`, `.js`, `.java`, etc.).
+*   **File Ignoring:**
+    *   Skips common binary files (images, executables, archives, etc.).
+    *   Ignores files larger than a configurable size (default: 5MB).
+    *   Skips common dependency and hidden folders (e.g., `.git`, `target`, `node_modules`).
+    *   Supports user-defined ignore patterns via a configuration file (`r2md.yml` or `r2md.yaml`).
+*   **Output Options:**
+    *   **Markdown File:** Writes the aggregated content to a Markdown file.
+    *   **PDF Generation (Optional):** Can also produce a basic PDF version of the code.
+    *   **Streaming to STDOUT:** If the output is piped, it streams the Markdown content directly to standard output.
+*   **Configuration File:**  Allows customization of ignore patterns through an optional `r2md.yml` or `r2md.yaml` file.
+*   **Debug Mode:** Provides verbose output for debugging file inclusion and exclusion.
 
-## How to Compile
+## Installation
 
-1. **Install Rust** (with [rustup](https://rustup.rs/)) if you haven’t already:
-   ```bash
-   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-   ```
-2. **Clone or download** this repository (or place the two main files, `Cargo.toml` and `src/main.rs`, in a new directory).
-3. In that directory, run:
-   ```bash
-   cargo build --release
-   ```
-   This creates a release build in `target/release/r2md` (on macOS/Linux) or `target\release\r2md.exe` (on Windows).
+Make sure you have Rust and Cargo installed. You can then install `r2md` using Cargo:
 
-## How to Run
-
-- **Basic usage** (scan the current directory, output to `r2md_output.md`):
-  ```bash
-  cargo run
-  ```
-  or, if you prefer the release binary:
-  ```bash
-  ./target/release/r2md
-  ```
-  (on Windows: `.\target\release\r2md.exe`).
-
-- **Specifying a repo path** and custom output:
-  ```bash
-  ./r2md /path/to/your/repository -o myoutput.md
-  ```
-  This scans the specified directory, ignoring non-code files, and writes the result to `myoutput.md`.
-
-- **Include a PDF** using the `-p` or `--pdf` flag:
-  ```bash
-  ./r2md . --pdf
-  ```
-  This generates both `r2md_output.md` and `r2md_output.pdf`.  
-  Or if you specify an output name, e.g. `-o myexport.md`, a `myexport.pdf` will also be produced.
-
-### Command-Line Arguments
-
-```
-Usage: r2md [PATH] [OPTIONS]
-
-Arguments:
-  [PATH]    Path to the repository (default: current directory)
-
-Options:
-  -o, --output <FILE>     Output Markdown file name (default: r2md_output.md)
-  -p, --pdf               Also produce a PDF file (default: r2md_output.pdf if no output is specified)
-  -h, --help              Print help information
-  -V, --version           Print version information
+```bash
+cargo install r2md
 ```
 
-## How to Install System-Wide (macOS, Linux, Windows)
+## Usage
 
-### macOS/Linux
+```bash
+r2md [OPTIONS] [PATHS...]
+```
 
-1. **Build** the release version:
-   ```bash
-   cargo build --release
-   ```
-2. Copy the binary (`r2md`) to a directory in your `$PATH`, for example:
-   ```bash
-   sudo cp target/release/r2md /usr/local/bin/
-   ```
-3. Now you can run:
-   ```bash
-   r2md --help
-   ```
+### Options
 
-### Windows
+*   `-o, --output <FILE>`:  Specify the output Markdown file name. Defaults to `r2md_output.md` if not streaming to stdout.
+*   `-p, --pdf`:  Produce a PDF file in addition to the Markdown file. The PDF will have the same name as the Markdown file but with a `.pdf` extension.
+*   `--debug`: Enable debug output, showing which files are being skipped and why.
 
-1. **Build** the release version:
-   ```powershell
-   cargo build --release
-   ```
-2. You will get an executable at `target\release\r2md.exe`.
-3. Copy or move this `.exe` to a folder in your `PATH`. For example:
-   - Create a folder `C:\bin` if it doesn’t exist.
-   - Copy:
-     ```powershell
-     copy .\target\release\r2md.exe C:\bin\
-     ```
-   - Add `C:\bin` to your [Windows system `PATH`](https://java.com/en/download/help/path.xml) if it isn’t there already.
-4. You can now run:
-   ```powershell
-   r2md --help
-   ```
-   from any folder.
+### Arguments
+
+*   `PATHS...`:  One or more directory paths to process. If no paths are provided, it defaults to the current directory (`.`).
+
+### Examples
+
+**Basic usage, outputting to the default `r2md_output.md` file:**
+
+```bash
+r2md
+```
+
+**Specify a directory to process:**
+
+```bash
+r2md src
+```
+
+**Process multiple directories:**
+
+```bash
+r2md src examples
+```
+
+**Specify the output Markdown file name:**
+
+```bash
+r2md -o my_code_documentation.md src
+```
+
+**Generate a PDF file as well:**
+
+```bash
+r2md -p src
+```
+
+**Generate a PDF with a custom output name:**
+
+```bash
+r2md -o my_code_documentation.md -p src
+```
+
+**Stream the output to stdout (e.g., for piping to other tools):**
+
+```bash
+r2md src | less
+```
+
+**Using a configuration file to ignore specific patterns:**
+
+```bash
+r2md src
+```
+
+(Assuming you have an `r2md.yml` or `r2md.yaml` file in the current directory - see Configuration section below).
+
+**Enable debug output:**
+
+```bash
+r2md --debug src
+```
+
+## Configuration
+
+You can customize the behavior of `r2md` by creating an optional configuration file named `r2md.yml` or `r2md.yaml` in the directory where you run the command.
+
+The configuration file supports the following options:
+
+```yaml
+ignore_patterns:
+  - "generated/"
+  - "tmp_"
+  - ".git/"
+```
+
+**`ignore_patterns`**: A list of string patterns. If a file path contains any of these patterns, it will be ignored.
+
+## File Recognition and Ignoring Details
+
+**r2md** uses a combination of methods to determine which files to include and exclude:
+
+*   **Recognized Extensions:**  It includes files with extensions commonly associated with source code (e.g., `.rs`, `.py`, `.js`, `.c`, `.cpp`, `.java`, etc.).
+*   **Binary File Extensions:** It automatically skips files with extensions known to be binary (e.g., `.jpg`, `.png`, `.exe`, `.dll`, `.pdf`, `.zip`, etc.).
+*   **Maximum File Size:** Files larger than 5MB are skipped by default to avoid processing very large files.
+*   **Skipped Folders:** Common dependency and hidden folders like `.git`, `target`, `node_modules`, etc., are automatically skipped.
+*   **User-Defined Ignores:**  The `ignore_patterns` in the configuration file allow you to specify additional patterns to ignore.
+
+## Output
+
+The generated Markdown file will contain the following sections:
+
+1. **Repository Markdown Export:** A main heading for the document.
+2. **Directory Structure:** A section displaying a tree-like representation of the input directories. This helps visualize the organization of your codebase.
+3. **Code:** A section containing the content of the recognized source code files. Each file will have a subheading with its relative path, followed by a code block containing the file's content.
+
+The optional PDF output provides a basic rendering of the same information, suitable for viewing or printing the code. Each directory and file is clearly labeled.
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit issues or pull requests on the project's repository.

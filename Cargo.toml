@@ -9,6 +9,9 @@ walkdir = "2.5.0"
 regex = "1.11.1"
 clap = "4.5.26"
 printpdf = "0.7.0"
+atty = "0.2.14"
+serde_yaml = "0.9.34"
+serde = { version = "1.0.217", features = ["derive"] }
 
 [[bin]]
 name = "r2md"
