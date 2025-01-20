@@ -1,27 +1,28 @@
-# r2md - Repository to Markdown
+```markdown
+# r2md: Repository to Markdown
 
-**r2md** is a command-line tool that aggregates code from one or more directories into a single Markdown file. It provides a convenient way to document the structure and contents of your codebase. Optionally, it can also generate a basic PDF representation of the collected code.
+`r2md` is a command-line tool that generates Markdown documentation from your code repository. It parses your project's directory structure and includes code snippets from recognized files, making it easy to create comprehensive overviews of your codebase.
 
 ## Features
 
-*   **Directory Structure:**  Generates a tree-like representation of the input directories in the Markdown output.
-*   **Code Inclusion:** Includes the content of recognized source code files within Markdown code blocks.
-*   **File Recognition:**  Recognizes a wide range of programming language files based on their extensions (e.g., `.rs`, `.py`, `.js`, `.java`, etc.).
-*   **File Ignoring:**
-    *   Skips common binary files (images, executables, archives, etc.).
-    *   Ignores files larger than a configurable size (default: 5MB).
-    *   Skips common dependency and hidden folders (e.g., `.git`, `target`, `node_modules`).
-    *   Supports user-defined ignore patterns via a configuration file (`r2md.yml` or `r2md.yaml`).
+*   **Directory Structure:** Generates a clear, hierarchical representation of your repository's directory structure in Markdown.
+*   **Code Inclusion:** Automatically includes the content of recognized code files (e.g., `.rs`, `.py`) in Markdown code blocks.
+*   **Language-Specific Parsing:**
+    *   Uses [tree-sitter](https://tree-sitter.github.io/) for more intelligent parsing of **Python** and **Rust** code, extracting functions, classes, structs, enums, and more as individual code blocks.
+    *   Provides a line-based fallback for other file types, attempting to identify logical code blocks.
 *   **Output Options:**
-    *   **Markdown File:** Writes the aggregated content to a Markdown file.
-    *   **PDF Generation (Optional):** Can also produce a basic PDF version of the code.
-    *   **Streaming to STDOUT:** If the output is piped, it streams the Markdown content directly to standard output.
-*   **Configuration File:**  Allows customization of ignore patterns through an optional `r2md.yml` or `r2md.yaml` file.
-*   **Debug Mode:** Provides verbose output for debugging file inclusion and exclusion.
+    *   **Markdown File Output:** Writes the generated documentation to a Markdown file (default: `r2md_output.md`).
+    *   **Streaming to STDOUT:**  Outputs the Markdown directly to standard output when the output is piped.
+    *   **PDF Generation (Optional):**  Can optionally produce a PDF version of the documentation using the `-p` or `--pdf` flag.
+*   **Configuration:** Allows customization through an optional `r2md.yml` or `r2md.yaml` configuration file to specify ignore patterns for files and directories.
+*   **Ignore Patterns:** Supports ignoring specific files or directories based on substring matching defined in the configuration file.
+*   **File Size Limits:** Skips processing of large files (default: 5MB) to improve performance.
+*   **Debug Mode:** Provides a `--debug` flag for verbose output, showing which files are being skipped and why.
+*   **Training Data Generation:**  Can generate JSON training data (`--train-json`) containing prompt and completion pairs extracted from your code, useful for fine-tuning language models. It utilizes the `cl100k_base` tokenizer (used by GPT-4).
 
 ## Installation
 
-Make sure you have Rust and Cargo installed. You can then install `r2md` using Cargo:
+Make sure you have Rust installed. You can install `r2md` using `cargo`:
 
 ```bash
 cargo install r2md
@@ -29,113 +30,139 @@ cargo install r2md
 
 ## Usage
 
-```bash
-r2md [OPTIONS] [PATHS...]
-```
-
-### Options
-
-*   `-o, --output <FILE>`:  Specify the output Markdown file name. Defaults to `r2md_output.md` if not streaming to stdout.
-*   `-p, --pdf`:  Produce a PDF file in addition to the Markdown file. The PDF will have the same name as the Markdown file but with a `.pdf` extension.
-*   `--debug`: Enable debug output, showing which files are being skipped and why.
-
-### Arguments
-
-*   `PATHS...`:  One or more directory paths to process. If no paths are provided, it defaults to the current directory (`.`).
-
-### Examples
-
-**Basic usage, outputting to the default `r2md_output.md` file:**
+Basic usage involves pointing `r2md` to one or more directories you want to document:
 
 ```bash
-r2md
+r2md path/to/your/code
 ```
 
-**Specify a directory to process:**
+This will generate a `r2md_output.md` file in the current directory.
 
-```bash
-r2md src
-```
+**Options:**
 
-**Process multiple directories:**
+*   **Specify Output File:** Use the `-o` or `--output` flag to specify the output Markdown file name:
 
-```bash
-r2md src examples
-```
+    ```bash
+    r2md path/to/your/code -o my_documentation.md
+    ```
 
-**Specify the output Markdown file name:**
+*   **Generate PDF:** Use the `-p` or `--pdf` flag to also generate a PDF file:
 
-```bash
-r2md -o my_code_documentation.md src
-```
+    ```bash
+    r2md path/to/your/code -p
+    ```
+    or
+    ```bash
+    r2md path/to/your/code -o my_documentation.md --pdf
+    ```
+    The PDF file will have the same name as the Markdown file, with the `.pdf` extension.
 
-**Generate a PDF file as well:**
+*   **Enable Debug Mode:** Use the `--debug` flag for more verbose output:
 
-```bash
-r2md -p src
-```
+    ```bash
+    r2md path/to/your/code --debug
+    ```
 
-**Generate a PDF with a custom output name:**
+*   **Generate LLM Training Data:** Use the `--train-json` flag to generate a JSON file containing training data:
 
-```bash
-r2md -o my_code_documentation.md -p src
-```
+    ```bash
+    r2md path/to/your/code --train-json training_data.json
+    ```
 
-**Stream the output to stdout (e.g., for piping to other tools):**
+*   **Multiple Directories:** Provide multiple directory paths to process them all in one go:
 
-```bash
-r2md src | less
-```
+    ```bash
+    r2md path/to/dir1 path/to/dir2
+    ```
 
-**Using a configuration file to ignore specific patterns:**
+*   **Streaming Output:** Pipe the output to another command or file to stream the Markdown:
 
-```bash
-r2md src
-```
-
-(Assuming you have an `r2md.yml` or `r2md.yaml` file in the current directory - see Configuration section below).
-
-**Enable debug output:**
-
-```bash
-r2md --debug src
-```
+    ```bash
+    r2md path/to/your/code | less
+    ```
 
 ## Configuration
 
-You can customize the behavior of `r2md` by creating an optional configuration file named `r2md.yml` or `r2md.yaml` in the directory where you run the command.
+You can configure `r2md` using an optional `r2md.yml` or `r2md.yaml` file in the directory where you run the command. This file allows you to specify patterns for files and directories that should be ignored.
 
-The configuration file supports the following options:
+**Example `r2md.yml`:**
 
 ```yaml
 ignore_patterns:
-  - "generated/"
-  - "tmp_"
-  - ".git/"
+  - ".git"
+  - "target"
+  - "node_modules"
+  - "_old.rs"
 ```
 
-**`ignore_patterns`**: A list of string patterns. If a file path contains any of these patterns, it will be ignored.
+Files or directories with names containing any of these patterns will be skipped during the documentation generation process.
 
-## File Recognition and Ignoring Details
+## Code Parsing Details
 
-**r2md** uses a combination of methods to determine which files to include and exclude:
+`r2md` leverages the power of [tree-sitter](https://tree-sitter.github.io/) for parsing code. This allows for a more structured and intelligent extraction of code blocks, particularly for:
 
-*   **Recognized Extensions:**  It includes files with extensions commonly associated with source code (e.g., `.rs`, `.py`, `.js`, `.c`, `.cpp`, `.java`, etc.).
-*   **Binary File Extensions:** It automatically skips files with extensions known to be binary (e.g., `.jpg`, `.png`, `.exe`, `.dll`, `.pdf`, `.zip`, etc.).
-*   **Maximum File Size:** Files larger than 5MB are skipped by default to avoid processing very large files.
-*   **Skipped Folders:** Common dependency and hidden folders like `.git`, `target`, `node_modules`, etc., are automatically skipped.
-*   **User-Defined Ignores:**  The `ignore_patterns` in the configuration file allow you to specify additional patterns to ignore.
+*   **Python:** Extracts function definitions (`def`), class definitions (`class`).
+*   **Rust:** Extracts function items (`fn`), struct items (`struct`), enum items (`enum`), impl items (`impl`), and trait items (`trait`).
 
-## Output
+For other file extensions, `r2md` falls back to a simpler line-based parsing approach, attempting to identify logical code blocks based on common keywords like `function`, `class`, or `def`.
 
-The generated Markdown file will contain the following sections:
+## Training Data Generation
 
-1. **Repository Markdown Export:** A main heading for the document.
-2. **Directory Structure:** A section displaying a tree-like representation of the input directories. This helps visualize the organization of your codebase.
-3. **Code:** A section containing the content of the recognized source code files. Each file will have a subheading with its relative path, followed by a code block containing the file's content.
+The `--train-json` feature generates training samples by splitting the content of each recognized code file into a "prompt" and a "completion". It uses an 80/20 split, with the first 80% of the tokens as the prompt and the remaining 20% as the completion. This data can be used for training or fine-tuning language models. The generated JSON includes:
 
-The optional PDF output provides a basic rendering of the same information, suitable for viewing or printing the code. Each directory and file is clearly labeled.
+*   `prompt`: The initial part of the code.
+*   `completion`: The subsequent part of the code.
+*   `prompt_tokens`: The number of tokens in the prompt.
+*   `completion_tokens`: The number of tokens in the completion.
+*   `tokenizer`: The name of the tokenizer used (`cl100k_base`).
+*   `tokenizer_rs_version`: The version of the tokenizer library.
+
+## Example Output
+
+Here's an example of the kind of output `r2md` produces:
+
+```markdown
+# Repository Markdown Export
+
+## Directory Structure
+
+```
+- my_project/
+  - src/
+    - main.rs
+    - utils.rs
+  - examples/
+    - example.rs
+```
+
+## Code
+
+### `src/main.rs`
+
+```plaintext
+fn main() {
+    println!("Hello, world!");
+}
+```
+
+### `src/utils.rs`
+
+```plaintext
+pub fn greet(name: &str) -> String {
+    format!("Hello, {}!", name)
+}
+```
+
+### `examples/example.rs`
+
+```plaintext
+use my_project::greet;
+
+fn main() {
+    println!("{}", greet("User"));
+}
+```
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit issues or pull requests on the project's repository.
+Contributions are welcome! Please feel free to open issues or submit pull requests on the project's repository.
