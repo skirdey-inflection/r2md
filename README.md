@@ -1,4 +1,3 @@
-```markdown
 # r2md: Repository to Markdown
 
 `r2md` is a command-line tool that generates Markdown documentation from your code repository. It parses your project's directory structure and includes code snippets from recognized files, making it easy to create comprehensive overviews of your codebase.
