@@ -13,6 +13,7 @@
     *   **Markdown File Output:** Writes the generated documentation to a Markdown file (default: `r2md_output.md`).
     *   **Streaming to STDOUT:**  Outputs the Markdown directly to standard output when the output is piped.
     *   **PDF Generation (Optional):**  Can optionally produce a PDF version of the documentation using the `-p` or `--pdf` flag.
+    *   **EXCLUDE:** `-x`, `--exclude` FOLDER	Exclude folders by name (can specify multiple times)
 *   **Configuration:** Allows customization through an optional `r2md.yml` or `r2md.yaml` configuration file to specify ignore patterns for files and directories.
 *   **Ignore Patterns:** Supports ignoring specific files or directories based on substring matching defined in the configuration file.
 *   **File Size Limits:** Skips processing of large files (default: 5MB) to improve performance.
@@ -78,6 +79,11 @@ This will generate a `r2md_output.md` file in the current directory.
 
     ```bash
     r2md path/to/your/code | less
+    ```
+
+*  **Generate PDF and exclude folders**
+    ```bash
+    r2md src tests -x target --pdf
     ```
 
 ## Configuration
