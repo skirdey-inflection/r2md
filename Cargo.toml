@@ -9,6 +9,17 @@ walkdir = "2.5.0"
 regex = "1.11.1"
 clap = "4.5.26"
 printpdf = "0.7.0"
+atty = "0.2.14"
+serde_yaml = "0.9.34"
+serde_json = "1.0.137"
+serde = { version = "1.0.217", features = ["derive"] }
+tree-sitter = "0.24.7"
+tree-sitter-python = "0.23.6"
+tree-sitter-rust = "0.23.2"
+
+tiktoken-rs = "0.6.0"
+anyhow = "1.0.95"
+
 
 [[bin]]
 name = "r2md"
