@@ -96,6 +96,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .default_value(".")
         )
         .arg(
+            Arg::new("exclude")
+                .short('x')
+                .long("exclude")
+                .help("Exclude the given folder (and subfolders) from processing")
+                .action(ArgAction::Append)
+                .required(false)
+        )
+        .arg(
             Arg::new("output")
                 .short('o')
                 .long("output")
@@ -132,6 +140,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         .map(PathBuf::from)
         .collect();
 
+    // Collect excluded paths (folders) if any
+    let excludes: Vec<PathBuf> = matches
+        .get_many::<String>("exclude")
+        .unwrap_or_default()
+        .map(PathBuf::from)
+        .collect();
+
     // Check if STDOUT is piped => streaming
     let stdout_is_tty = atty::is(atty::Stream::Stdout);
     let streaming = !stdout_is_tty;
@@ -158,7 +173,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Collect recognized code files from all given directories
     let mut all_files = Vec::new();
     for dir in &directories {
-        let collected = collect_files(dir, &user_ignores, debug_mode)?;
+        let collected = collect_files(dir, &user_ignores, &excludes, debug_mode)?;
         all_files.extend(collected);
     }
 
@@ -345,10 +360,29 @@ fn should_skip_file(path: &Path, user_ignores: &[String], debug: bool) -> bool {
     false
 }
 
-/// Collect recognized files for a single directory
+fn is_excluded_path(path: &Path, excludes: &[PathBuf]) -> bool {
+    // We’ll do a canonicalize on the `path` so that comparisons are consistent:
+    let path_canonical = match path.canonicalize() {
+        Ok(p) => p,
+        Err(_) => return false, // If we can't canonicalize, skip trying to exclude
+    };
+
+    for exc in excludes {
+        // canonicalize each exclude as well (you might do it once ahead of time)
+        if let Ok(exc_canon) = exc.canonicalize() {
+            // If path is inside exc_canon, i.e. path starts with exc_canon
+            if path_canonical.starts_with(&exc_canon) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn collect_files(
     dir: &Path,
     user_ignores: &[String],
+    excludes: &[PathBuf],
     debug: bool,
 ) -> Result<Vec<FileEntry>, Box<dyn Error>> {
     let mut entries = Vec::new();
@@ -371,17 +405,27 @@ fn collect_files(
             Err(_) => continue,
         };
         let path = ent.path();
+
+        // First, check if this path or any parent is excluded
+        if is_excluded_path(path, excludes) {
+            if debug {
+                eprintln!("Skipping excluded path: {}", path.display());
+            }
+            continue;
+        }
+
+        // Then, if it's a folder, see if it's in the skip list
         if path.is_dir() && should_skip_folder(path) {
             continue;
         }
+        // Next, skip the file if it fails our "should_skip_file" logic
         if should_skip_file(path, user_ignores, debug) {
             continue;
         }
 
-        // Attempt read
+        // Attempt reading the file contents
         match fs::read_to_string(path) {
             Ok(content) => {
-                // 1) We'll parse the file into multiple CodeChunk objects
                 let ext = path
                     .extension()
                     .and_then(|s| s.to_str())
@@ -390,22 +434,17 @@ fn collect_files(
 
                 let code_chunks = parse::parse_file_to_chunks(&content, &ext);
 
-                // 2) For each chunk, we create a separate FileEntry
-                // We'll append something like `:chunkN` if there's >1 chunk
-                // or just store it directly if there's only 1.
                 for (i, chunk) in code_chunks.into_iter().enumerate() {
                     let rel_path = make_relative(dir, path);
                     let effective_name = if i == 0 {
-                        // first chunk, keep the original name
                         rel_path.clone()
                     } else {
-                        // add suffix
                         format!("{} (part {})", rel_path, i)
                     };
 
                     entries.push(FileEntry {
                         rel_path: effective_name,
-                        content: chunk.text, // The chunk text
+                        content: chunk.text,
                     });
                 }
             }
