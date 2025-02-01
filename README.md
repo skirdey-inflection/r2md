@@ -35,6 +35,14 @@ Process one or more specific directories:
 r2md path/to/dir1 path/to/dir2
 ```
 
+### Specify Github URLs
+
+Process one or more specific urls:
+
+```bash
+r2md https://github.com/skirdey/boss.git
+```
+
 ### Exclude Folders
 
 Exclude certain folders from processing:

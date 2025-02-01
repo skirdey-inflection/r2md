@@ -1,15 +1,19 @@
 use atty; // for checking if stdout is a TTY
 use clap::{Arg, ArgAction, Command};
 use ignore::WalkBuilder;
-use printpdf::{BuiltinFont, Mm, PdfDocument};
+use rayon::prelude::*;
 use serde::Deserialize;
 use serde_yaml;
 use std::error::Error;
 use std::ffi::OsStr;
 use std::fs::{self, File};
-use std::io::{self, BufWriter, Write};
+use std::io::{self, BufWriter, Cursor, Read, Write};
 use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
+use walkdir::WalkDir; // NEW: for parallel processing // NEW: For in-memory ZIP reading
+
+// NEW: For downloading repositories and unzipping
+use reqwest;
+use zip::ZipArchive;
 
 mod training; // at the top
 use crate::training::produce_training_json;
@@ -76,6 +80,33 @@ static SKIP_FOLDERS: &[&str] = &[
 /// Default maximum file size (5MB) for skipping large files
 const DEFAULT_MAX_FILE_SIZE: u64 = 5 * 1024 * 1024;
 
+// Helper: determine a language identifier from the file’s extension.
+fn language_from_path(path: &Path) -> &str {
+    match path
+        .extension()
+        .and_then(OsStr::to_str)
+        .unwrap_or("")
+        .to_lowercase()
+        .as_str()
+    {
+        "rs" => "rust",
+        "py" => "python",
+        "js" => "javascript",
+        "ts" => "typescript",
+        "java" => "java",
+        "c" => "c",
+        "cpp" => "cpp",
+        other => {
+            // You can add additional mappings here
+            if other.is_empty() {
+                "plaintext"
+            } else {
+                "unknwon"
+            }
+        }
+    }
+}
+
 /// Config for optional YAML (`r2md.yml` / `r2md.yaml`)
 #[derive(Debug, Deserialize)]
 struct R2mdConfig {
@@ -85,13 +116,14 @@ struct R2mdConfig {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    // (The unchanged CLI/argument parsing and config loading code remains here.)
     let matches = Command::new("r2md")
-        .version("0.6.0")
-        .author("Example <you@example.com>")
+        .version("0.0.9")
+        .author("Stanislav Kirdey")
         .about("r2md: merges code from multiple directories, streams or writes Markdown, and can optionally produce PDF.")
         .arg(
             Arg::new("paths")
-                .help("One or more directories to process")
+                .help("One or more directories or git repo URLs to process")
                 .num_args(0..)
                 .default_value(".")
         )
@@ -133,60 +165,53 @@ fn main() -> Result<(), Box<dyn Error>> {
         )
         .get_matches();
 
-    // Collect directories from CLI
+    // (Directory, excludes, streaming and config code unchanged)
     let directories: Vec<PathBuf> = matches
         .get_many::<String>("paths")
         .unwrap_or_default()
         .map(PathBuf::from)
         .collect();
-
-    // Collect excluded paths (folders) if any
     let excludes: Vec<PathBuf> = matches
         .get_many::<String>("exclude")
         .unwrap_or_default()
         .map(PathBuf::from)
         .collect();
-
-    // Check if STDOUT is piped => streaming
     let stdout_is_tty = atty::is(atty::Stream::Stdout);
     let streaming = !stdout_is_tty;
-
-    // Determine output MD file name if not streaming
     let output_md_file = matches
         .get_one::<String>("output")
         .map(|s| s.as_str())
         .unwrap_or("r2md_output.md");
-
-    // Produce a PDF as well?
     let produce_pdf = matches.get_flag("pdf");
 
-    // Load optional YAML config
     let config = load_config_file()?;
-    // Gather user ignore patterns
     let mut user_ignores = vec![];
     if let Some(ref c) = config {
         user_ignores.extend(c.ignore_patterns.clone());
     }
-
     let debug_mode = matches.get_flag("debug");
 
-    // Collect recognized code files from all given directories
     let mut all_files = Vec::new();
-    for dir in &directories {
-        let collected = collect_files(dir, &user_ignores, &excludes, debug_mode)?;
-        all_files.extend(collected);
+    for input in &directories {
+        let input_str = input.to_string_lossy();
+        if input_str.starts_with("http://") || input_str.starts_with("https://") {
+            // NEW: Process as Git URL (download the main branch ZIP archive into memory)
+            let git_files = collect_files_from_git_url(&input_str, &user_ignores, debug_mode)?;
+            all_files.extend(git_files);
+        } else {
+            // Process as a local directory
+            let collected = collect_files_parallel(input, &user_ignores, &excludes, debug_mode)?;
+            all_files.extend(collected);
+        }
     }
 
-    // If streaming -> dump everything to stdout
     if streaming {
         stream_markdown(&all_files)?;
         return Ok(());
     }
 
-    // Otherwise, produce a single .md file
+    // Build the Markdown output with proper code fences.
     let mut md_output = String::new();
-
-    // 1) For each directory, generate a directory structure block
     for dir in &directories {
         md_output.push_str("# Repository Markdown Export\n\n");
         md_output.push_str("## Directory Structure\n\n");
@@ -194,21 +219,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         md_output.push_str(&generate_directory_tree(dir)?);
         md_output.push_str("```\n\n");
     }
-
-    // 2) Include code listings
     md_output.push_str("## Code\n\n");
     for file in &all_files {
-        // Create a heading with the file name
+        let path = Path::new(&file.rel_path);
+        let lang = language_from_path(path);
         let heading = format!("### `{}`\n\n", file.rel_path);
         md_output.push_str(&heading);
-
-        // Print file in one code block
-        md_output.push_str("```plaintext\n");
+        md_output.push_str(&format!("```{}\n", lang));
         md_output.push_str(&file.content);
         md_output.push_str("\n```\n\n");
     }
 
-    // Write the .md output
     {
         let mut f = BufWriter::new(File::create(output_md_file)?);
         f.write_all(md_output.as_bytes())?;
@@ -216,7 +237,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     println!("Markdown exported to {}", output_md_file);
 
-    // 3) (Optional) Also produce a PDF
     if produce_pdf {
         let pdf_name = if output_md_file == "r2md_output.md" {
             "r2md_output.pdf".to_string()
@@ -228,10 +248,232 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     if let Some(json_path) = matches.get_one::<String>("train-json") {
-        // We'll produce naive prompt+completion pairs for each file
         produce_training_json(&all_files, json_path)?;
     }
 
+    Ok(())
+}
+
+fn collect_files_from_git_url(
+    url: &str,
+    user_ignores: &[String],
+    debug: bool,
+) -> Result<Vec<FileEntry>, Box<dyn Error>> {
+    // Remove trailing ".git" if present.
+    let mut base_url = url.to_string();
+    if base_url.ends_with(".git") {
+        base_url = base_url.trim_end_matches(".git").to_string();
+    }
+
+    // Closure that attempts to download the ZIP archive for a given branch.
+    let try_download = |branch: &str| -> Result<reqwest::blocking::Response, Box<dyn Error>> {
+        let download_url = if base_url.ends_with('/') {
+            format!("{}archive/refs/heads/{}.zip", base_url, branch)
+        } else {
+            format!("{}/archive/refs/heads/{}.zip", base_url, branch)
+        };
+        if debug {
+            eprintln!(
+                "Attempting to download repository ZIP from: {}",
+                download_url
+            );
+        }
+        let resp = reqwest::blocking::get(&download_url)?;
+        if resp.status().is_success() {
+            Ok(resp)
+        } else {
+            Err(format!(
+                "Failed to download repository ZIP for branch {}: {}",
+                branch,
+                resp.status()
+            )
+            .into())
+        }
+    };
+
+    // Try the "main" branch first; if that fails, try "master".
+    let response = try_download("main").or_else(|err| {
+        if debug {
+            eprintln!("Main branch download failed: {}", err);
+        }
+        try_download("master")
+    })?;
+
+    // Continue as before: read the ZIP archive from memory.
+    let bytes = response.bytes()?;
+    let reader = std::io::Cursor::new(bytes);
+    let mut archive = zip::ZipArchive::new(reader)?;
+    let mut file_entries = Vec::new();
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)?;
+        if file.is_dir() {
+            continue;
+        }
+        // The file name in the ZIP is typically in the form "repo-branch/relative/path/to/file"
+        let full_name = file.name();
+        let path = Path::new(full_name);
+        // Remove the first component (the top-level folder)
+        let mut components = path.components();
+        let _ = components.next(); // skip top-level folder
+        let rel_path = components.as_path().to_string_lossy().to_string();
+
+        // Skip large files.
+        if file.size() > DEFAULT_MAX_FILE_SIZE {
+            if debug {
+                eprintln!("Skipping large file from zip: {}", rel_path);
+            }
+            continue;
+        }
+
+        // Check extension (similar to should_skip_file).
+        let ext = Path::new(&rel_path)
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        if !RECOGNIZED_EXTENSIONS.contains(&ext.as_str()) {
+            if BINARY_FILE_EXTENSIONS.contains(&ext.as_str()) {
+                if debug {
+                    eprintln!("Skipping known binary file from zip: {}", rel_path);
+                }
+                continue;
+            }
+            if debug {
+                eprintln!(
+                    "Skipping unrecognized extension file from zip: {}",
+                    rel_path
+                );
+            }
+            continue;
+        }
+
+        // Check user ignore patterns.
+        if user_ignores.iter().any(|pat| rel_path.contains(pat)) {
+            if debug {
+                eprintln!(
+                    "Skipping file by user ignore pattern from zip: {}",
+                    rel_path
+                );
+            }
+            continue;
+        }
+
+        // Read the file content (as UTF-8 text).
+        let mut content = String::new();
+        if let Err(e) = file.read_to_string(&mut content) {
+            if debug {
+                eprintln!("Skipping unreadable file {}: {}", rel_path, e);
+            }
+            continue;
+        }
+
+        file_entries.push(FileEntry { rel_path, content });
+    }
+    Ok(file_entries)
+}
+
+fn stream_markdown(files: &[FileEntry]) -> io::Result<()> {
+    let stdout = io::stdout();
+    let mut handle = stdout.lock();
+
+    writeln!(handle, "# r2md Streaming Output\n")?;
+    for file in files {
+        let path = Path::new(&file.rel_path);
+        let lang = language_from_path(path);
+        writeln!(handle, "### `{}`\n", file.rel_path)?;
+        writeln!(handle, "```{}", lang)?;
+        writeln!(handle, "{}", file.content)?;
+        writeln!(handle, "```")?;
+        writeln!(handle)?;
+    }
+    handle.flush()
+}
+
+fn write_pdf_file(
+    files: &[FileEntry],
+    directories: &[PathBuf],
+    output_file_name: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use printpdf::{BuiltinFont, Color, Mm, PdfDocument, Rgb};
+    use syntect::easy::HighlightLines;
+    use syntect::highlighting::ThemeSet;
+    use syntect::parsing::SyntaxSet;
+
+    // Create a new PDF document.
+    let (doc, page1, layer1) = PdfDocument::new("r2md PDF", Mm(297.0), Mm(210.0), "Layer 1");
+    let font = doc.add_builtin_font(BuiltinFont::Courier)?;
+    let mut current_layer = doc.get_page(page1).get_layer(layer1);
+    let mut current_y = 210.0_f32;
+
+    // Prepare syntect’s syntax and theme sets.
+    let ss = SyntaxSet::load_defaults_newlines();
+    let ts = ThemeSet::load_defaults();
+    // Choose a theme – here we use "InspiredGitHub".
+    let theme = &ts.themes["InspiredGitHub"];
+
+    // Print directory headers.
+    for d in directories {
+        if current_y < 20.0 {
+            let (p, l) = doc.add_page(Mm(297.0), Mm(210.0), "Layer next");
+            current_layer = doc.get_page(p).get_layer(l);
+            current_y = 210.0;
+        }
+        let text = format!("Directory: {}\n", d.display());
+        current_layer.use_text(text, 12.0, Mm(10.0), Mm(current_y), &font);
+        current_y -= 10.0;
+    }
+
+    // For each file...
+    for file in files {
+        if current_y < 20.0 {
+            let (p, l) = doc.add_page(Mm(297.0), Mm(210.0), "Layer next");
+            current_layer = doc.get_page(p).get_layer(l);
+            current_y = 210.0;
+        }
+        let heading = format!("File: {}\n", file.rel_path);
+        current_layer.use_text(heading, 10.0, Mm(10.0), Mm(current_y), &font);
+        current_y -= 6.0;
+
+        // Determine syntax for highlighting.
+        let path = std::path::Path::new(&file.rel_path);
+        let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+        let syntax = ss
+            .find_syntax_by_extension(ext)
+            .unwrap_or_else(|| ss.find_syntax_plain_text());
+        let mut highlighter = HighlightLines::new(syntax, theme);
+
+        // Print file content line by line with token-level highlighting.
+        for line in file.content.lines() {
+            if current_y < 10.0 {
+                let (p, l) = doc.add_page(Mm(297.0), Mm(210.0), "Layer next");
+                current_layer = doc.get_page(p).get_layer(l);
+                current_y = 210.0;
+            }
+            let regions = highlighter
+                .highlight_line(line, &ss)
+                .map_err(|e| format!("Highlighting error: {}", e))?;
+            let mut x = Mm(10.0);
+            // For each highlighted region, set the fill color and draw the text.
+            for (style, text) in regions {
+                let r = style.foreground.r as f32 / 255.0;
+                let g = style.foreground.g as f32 / 255.0;
+                let b = style.foreground.b as f32 / 255.0;
+                current_layer.set_fill_color(Color::Rgb(Rgb::new(r, g, b, None)));
+                current_layer.use_text(text, 8.0, x, Mm(current_y), &font);
+                // Estimate width per token (using Courier: ~4.0 mm per character).
+                let token_width = 1.7_f32 * (text.len() as f32);
+                x += Mm(token_width);
+            }
+            current_y -= 4.0;
+        }
+        current_y -= 4.0; // extra gap between files
+    }
+
+    // Save the PDF document.
+    doc.save(&mut std::io::BufWriter::new(std::fs::File::create(
+        output_file_name,
+    )?))?;
     Ok(())
 }
 
@@ -298,13 +540,17 @@ fn generate_directory_tree(dir: &Path) -> Result<String, Box<dyn Error>> {
 
 /// Determine if folder should be skipped (hidden or in SKIP_FOLDERS)
 fn should_skip_folder(path: &Path) -> bool {
-    if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
-        if name.starts_with('.') {
-            return true;
-        }
-
-        if SKIP_FOLDERS.contains(&name) {
-            return true;
+    // Check every component in the path.
+    for component in path.components() {
+        if let Some(name) = component.as_os_str().to_str() {
+            // Skip hidden folders (names starting with a dot)
+            if name.starts_with('.') {
+                return true;
+            }
+            // If any component matches one of our skip folder names, skip the folder.
+            if SKIP_FOLDERS.contains(&name) {
+                return true;
+            }
         }
     }
     false
@@ -379,18 +625,16 @@ fn is_excluded_path(path: &Path, excludes: &[PathBuf]) -> bool {
     false
 }
 
-fn collect_files(
+/// Collect files in parallel using Rayon.
+fn collect_files_parallel(
     dir: &Path,
     user_ignores: &[String],
     excludes: &[PathBuf],
     debug: bool,
 ) -> Result<Vec<FileEntry>, Box<dyn Error>> {
-    let mut entries = Vec::new();
-
     if !dir.is_dir() {
-        return Ok(entries);
+        return Ok(vec![]);
     }
-
     let walker = WalkBuilder::new(dir)
         .hidden(false)
         .follow_links(false)
@@ -399,64 +643,63 @@ fn collect_files(
         .git_exclude(false)
         .build();
 
-    for entry in walker {
-        let ent = match entry {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        let path = ent.path();
-
-        // First, check if this path or any parent is excluded
-        if is_excluded_path(path, excludes) {
-            if debug {
-                eprintln!("Skipping excluded path: {}", path.display());
+    // First, gather paths that pass our exclusion tests.
+    let paths: Vec<PathBuf> = walker
+        .filter_map(|entry| match entry {
+            Ok(ent) => {
+                let path = ent.path();
+                if is_excluded_path(path, excludes) {
+                    if debug {
+                        eprintln!("Skipping excluded path: {}", path.display());
+                    }
+                    return None;
+                }
+                if path.is_dir() && should_skip_folder(path) {
+                    return None;
+                }
+                if !path.is_dir() && should_skip_file(path, user_ignores, debug) {
+                    return None;
+                }
+                if path.is_file() {
+                    Some(path.to_path_buf())
+                } else {
+                    None
+                }
             }
-            continue;
-        }
+            Err(_) => None,
+        })
+        .collect();
 
-        // Then, if it's a folder, see if it's in the skip list
-        if path.is_dir() && should_skip_folder(path) {
-            continue;
-        }
-        // Next, skip the file if it fails our "should_skip_file" logic
-        if should_skip_file(path, user_ignores, debug) {
-            continue;
-        }
-
-        // Attempt reading the file contents
-        match fs::read_to_string(path) {
+    // Process file reading and parsing in parallel.
+    let file_entries: Vec<FileEntry> = paths
+        .par_iter()
+        .filter_map(|path| match fs::read_to_string(path) {
             Ok(content) => {
                 let ext = path
                     .extension()
                     .and_then(|s| s.to_str())
                     .unwrap_or("")
                     .to_lowercase();
-
                 let code_chunks = parse::parse_file_to_chunks(&content, &ext);
-
-                for (i, chunk) in code_chunks.into_iter().enumerate() {
-                    let rel_path = make_relative(dir, path);
-                    let effective_name = if i == 0 {
-                        rel_path.clone()
-                    } else {
-                        format!("{} (part {})", rel_path, i)
-                    };
-
-                    entries.push(FileEntry {
-                        rel_path: effective_name,
-                        content: chunk.text,
-                    });
-                }
+                let joined_content = code_chunks
+                    .into_iter()
+                    .map(|chunk| chunk.text)
+                    .collect::<String>();
+                Some(FileEntry {
+                    rel_path: make_relative(dir, path),
+                    content: joined_content,
+                })
             }
             Err(e) => {
                 if debug {
                     eprintln!("Skipping unreadable file {}: {}", path.display(), e);
                 }
+                None
             }
-        }
-    }
+        })
+        .collect();
 
-    Ok(entries)
+    Ok(file_entries)
 }
 
 /// Convert path->string relative to `base`, always using forward slashes
@@ -465,74 +708,4 @@ fn make_relative(base: &Path, target: &Path) -> String {
         Ok(rel) => rel.to_string_lossy().replace('\\', "/"),
         Err(_) => target.to_string_lossy().replace('\\', "/"),
     }
-}
-
-/// Stream output to stdout (no chunking, entire file in one code block)
-fn stream_markdown(files: &[FileEntry]) -> io::Result<()> {
-    let stdout = io::stdout();
-    let mut handle = stdout.lock();
-
-    writeln!(handle, "# r2md Streaming Output\n")?;
-
-    for file in files {
-        writeln!(handle, "### `{}`\n", file.rel_path)?;
-        writeln!(handle, "```")?;
-        writeln!(handle, "{}", file.content)?;
-        writeln!(handle, "```")?;
-        writeln!(handle)?;
-    }
-
-    handle.flush()
-}
-
-/// Produce a PDF with a simple text layout
-fn write_pdf_file(
-    files: &[FileEntry],
-    directories: &[PathBuf],
-    output_file_name: &str,
-) -> Result<(), Box<dyn Error>> {
-    let (doc, page1, layer1) = PdfDocument::new("r2md PDF", Mm(210.0), Mm(297.0), "Layer 1");
-    let font = doc.add_builtin_font(BuiltinFont::Courier)?;
-    let mut current_layer = doc.get_page(page1).get_layer(layer1);
-
-    let mut current_y = 270.0;
-
-    // Print a header for each directory
-    for d in directories {
-        if current_y < 20.0 {
-            let (p, l) = doc.add_page(Mm(210.0), Mm(297.0), "Layer next");
-            current_layer = doc.get_page(p).get_layer(l);
-            current_y = 270.0;
-        }
-        let text = format!("Directory: {}\n", d.display());
-        current_layer.use_text(text, 12.0, Mm(10.0), Mm(current_y), &font);
-        current_y -= 10.0;
-    }
-
-    // Then each file
-    for file in files {
-        if current_y < 20.0 {
-            let (p, l) = doc.add_page(Mm(210.0), Mm(297.0), "Layer next");
-            current_layer = doc.get_page(p).get_layer(l);
-            current_y = 270.0;
-        }
-        let heading = format!("File: {}\n", file.rel_path);
-        current_layer.use_text(heading, 10.0, Mm(10.0), Mm(current_y), &font);
-        current_y -= 6.0;
-
-        // Print the file content line by line
-        for line in file.content.lines() {
-            if current_y < 10.0 {
-                let (p, l) = doc.add_page(Mm(210.0), Mm(297.0), "Layer next");
-                current_layer = doc.get_page(p).get_layer(l);
-                current_y = 270.0;
-            }
-            current_layer.use_text(line, 8.0, Mm(10.0), Mm(current_y), &font);
-            current_y -= 4.0;
-        }
-        current_y -= 4.0; // extra gap
-    }
-
-    doc.save(&mut BufWriter::new(File::create(output_file_name)?))?;
-    Ok(())
 }
