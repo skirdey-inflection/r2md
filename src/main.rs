@@ -114,8 +114,8 @@ struct R2mdConfig {
 fn main() -> Result<(), Box<dyn Error>> {
     // (The unchanged CLI/argument parsing and config loading code remains here.)
     let matches = Command::new("r2md")
-        .version("0.6.0")
-        .author("Example <you@example.com>")
+        .version("0.0.9")
+        .author("Stanislav Kirdey")
         .about("r2md: merges code from multiple directories, streams or writes Markdown, and can optionally produce PDF.")
         .arg(
             Arg::new("paths")
