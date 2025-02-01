@@ -52,7 +52,7 @@ jobs:
           fi
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
           path: artifacts/${{ matrix.target }}
@@ -67,19 +67,19 @@ jobs:
     permissions: write-all
     steps:
       - name: Download Linux artifact
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: x86_64-unknown-linux-gnu
           path: artifacts/x86_64-unknown-linux-gnu
 
       - name: Download Windows artifact
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: x86_64-pc-windows-gnu
           path: artifacts/x86_64-pc-windows-gnu
 
       - name: Download macOS artifact
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: x86_64-apple-darwin
           path: artifacts/x86_64-apple-darwin
