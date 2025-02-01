@@ -409,13 +409,17 @@ fn generate_directory_tree(dir: &Path) -> Result<String, Box<dyn Error>> {
 
 /// Determine if folder should be skipped (hidden or in SKIP_FOLDERS)
 fn should_skip_folder(path: &Path) -> bool {
-    if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
-        if name.starts_with('.') {
-            return true;
-        }
-
-        if SKIP_FOLDERS.contains(&name) {
-            return true;
+    // Check every component in the path.
+    for component in path.components() {
+        if let Some(name) = component.as_os_str().to_str() {
+            // Skip hidden folders (names starting with a dot)
+            if name.starts_with('.') {
+                return true;
+            }
+            // If any component matches one of our skip folder names, skip the folder.
+            if SKIP_FOLDERS.contains(&name) {
+                return true;
+            }
         }
     }
     false
