@@ -76,6 +76,33 @@ static SKIP_FOLDERS: &[&str] = &[
 /// Default maximum file size (5MB) for skipping large files
 const DEFAULT_MAX_FILE_SIZE: u64 = 5 * 1024 * 1024;
 
+// Helper: determine a language identifier from the file’s extension.
+fn language_from_path(path: &Path) -> &str {
+    match path
+        .extension()
+        .and_then(OsStr::to_str)
+        .unwrap_or("")
+        .to_lowercase()
+        .as_str()
+    {
+        "rs" => "rust",
+        "py" => "python",
+        "js" => "javascript",
+        "ts" => "typescript",
+        "java" => "java",
+        "c" => "c",
+        "cpp" => "cpp",
+        other => {
+            // You can add additional mappings here
+            if other.is_empty() {
+                "plaintext"
+            } else {
+                "unknwon"
+            }
+        }
+    }
+}
+
 /// Config for optional YAML (`r2md.yml` / `r2md.yaml`)
 #[derive(Debug, Deserialize)]
 struct R2mdConfig {
@@ -85,6 +112,7 @@ struct R2mdConfig {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    // (The unchanged CLI/argument parsing and config loading code remains here.)
     let matches = Command::new("r2md")
         .version("0.6.0")
         .author("Example <you@example.com>")
@@ -133,60 +161,45 @@ fn main() -> Result<(), Box<dyn Error>> {
         )
         .get_matches();
 
-    // Collect directories from CLI
+    // (Directory, excludes, streaming and config code unchanged)
     let directories: Vec<PathBuf> = matches
         .get_many::<String>("paths")
         .unwrap_or_default()
         .map(PathBuf::from)
         .collect();
-
-    // Collect excluded paths (folders) if any
     let excludes: Vec<PathBuf> = matches
         .get_many::<String>("exclude")
         .unwrap_or_default()
         .map(PathBuf::from)
         .collect();
-
-    // Check if STDOUT is piped => streaming
     let stdout_is_tty = atty::is(atty::Stream::Stdout);
     let streaming = !stdout_is_tty;
-
-    // Determine output MD file name if not streaming
     let output_md_file = matches
         .get_one::<String>("output")
         .map(|s| s.as_str())
         .unwrap_or("r2md_output.md");
-
-    // Produce a PDF as well?
     let produce_pdf = matches.get_flag("pdf");
 
-    // Load optional YAML config
     let config = load_config_file()?;
-    // Gather user ignore patterns
     let mut user_ignores = vec![];
     if let Some(ref c) = config {
         user_ignores.extend(c.ignore_patterns.clone());
     }
-
     let debug_mode = matches.get_flag("debug");
 
-    // Collect recognized code files from all given directories
     let mut all_files = Vec::new();
     for dir in &directories {
         let collected = collect_files(dir, &user_ignores, &excludes, debug_mode)?;
         all_files.extend(collected);
     }
 
-    // If streaming -> dump everything to stdout
     if streaming {
         stream_markdown(&all_files)?;
         return Ok(());
     }
 
-    // Otherwise, produce a single .md file
+    // Build the Markdown output with proper code fences.
     let mut md_output = String::new();
-
-    // 1) For each directory, generate a directory structure block
     for dir in &directories {
         md_output.push_str("# Repository Markdown Export\n\n");
         md_output.push_str("## Directory Structure\n\n");
@@ -194,21 +207,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         md_output.push_str(&generate_directory_tree(dir)?);
         md_output.push_str("```\n\n");
     }
-
-    // 2) Include code listings
     md_output.push_str("## Code\n\n");
     for file in &all_files {
-        // Create a heading with the file name
+        let path = Path::new(&file.rel_path);
+        let lang = language_from_path(path);
         let heading = format!("### `{}`\n\n", file.rel_path);
         md_output.push_str(&heading);
-
-        // Print file in one code block
-        md_output.push_str("```plaintext\n");
+        md_output.push_str(&format!("```{}\n", lang));
         md_output.push_str(&file.content);
         md_output.push_str("\n```\n\n");
     }
 
-    // Write the .md output
     {
         let mut f = BufWriter::new(File::create(output_md_file)?);
         f.write_all(md_output.as_bytes())?;
@@ -216,7 +225,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     println!("Markdown exported to {}", output_md_file);
 
-    // 3) (Optional) Also produce a PDF
     if produce_pdf {
         let pdf_name = if output_md_file == "r2md_output.md" {
             "r2md_output.pdf".to_string()
@@ -228,10 +236,113 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     if let Some(json_path) = matches.get_one::<String>("train-json") {
-        // We'll produce naive prompt+completion pairs for each file
         produce_training_json(&all_files, json_path)?;
     }
 
+    Ok(())
+}
+
+fn stream_markdown(files: &[FileEntry]) -> io::Result<()> {
+    let stdout = io::stdout();
+    let mut handle = stdout.lock();
+
+    writeln!(handle, "# r2md Streaming Output\n")?;
+    for file in files {
+        let path = Path::new(&file.rel_path);
+        let lang = language_from_path(path);
+        writeln!(handle, "### `{}`\n", file.rel_path)?;
+        writeln!(handle, "```{}", lang)?;
+        writeln!(handle, "{}", file.content)?;
+        writeln!(handle, "```")?;
+        writeln!(handle)?;
+    }
+    handle.flush()
+}
+
+fn write_pdf_file(
+    files: &[FileEntry],
+    directories: &[PathBuf],
+    output_file_name: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use printpdf::{BuiltinFont, Color, Mm, PdfDocument, Rgb};
+    use syntect::easy::HighlightLines;
+    use syntect::highlighting::ThemeSet;
+    use syntect::parsing::SyntaxSet;
+
+    // Create a new PDF document.
+    let (doc, page1, layer1) = PdfDocument::new("r2md PDF", Mm(297.0), Mm(210.0), "Layer 1");
+    let font = doc.add_builtin_font(BuiltinFont::Courier)?;
+    let mut current_layer = doc.get_page(page1).get_layer(layer1);
+    let mut current_y = 210.0_f32;
+
+    // Prepare syntect’s syntax and theme sets.
+    let ss = SyntaxSet::load_defaults_newlines();
+    let ts = ThemeSet::load_defaults();
+    // Choose a theme – here we use "InspiredGitHub".
+    let theme = &ts.themes["InspiredGitHub"];
+
+    // Print directory headers.
+    for d in directories {
+        if current_y < 20.0 {
+            let (p, l) = doc.add_page(Mm(297.0), Mm(210.0), "Layer next");
+            current_layer = doc.get_page(p).get_layer(l);
+            current_y = 210.0;
+        }
+        let text = format!("Directory: {}\n", d.display());
+        current_layer.use_text(text, 12.0, Mm(10.0), Mm(current_y), &font);
+        current_y -= 10.0;
+    }
+
+    // For each file...
+    for file in files {
+        if current_y < 20.0 {
+            let (p, l) = doc.add_page(Mm(297.0), Mm(210.0), "Layer next");
+            current_layer = doc.get_page(p).get_layer(l);
+            current_y = 210.0;
+        }
+        let heading = format!("File: {}\n", file.rel_path);
+        current_layer.use_text(heading, 10.0, Mm(10.0), Mm(current_y), &font);
+        current_y -= 6.0;
+
+        // Determine syntax for highlighting.
+        let path = std::path::Path::new(&file.rel_path);
+        let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+        let syntax = ss
+            .find_syntax_by_extension(ext)
+            .unwrap_or_else(|| ss.find_syntax_plain_text());
+        let mut highlighter = HighlightLines::new(syntax, theme);
+
+        // Print file content line by line with token-level highlighting.
+        for line in file.content.lines() {
+            if current_y < 10.0 {
+                let (p, l) = doc.add_page(Mm(297.0), Mm(210.0), "Layer next");
+                current_layer = doc.get_page(p).get_layer(l);
+                current_y = 210.0;
+            }
+            let regions = highlighter
+                .highlight_line(line, &ss)
+                .map_err(|e| format!("Highlighting error: {}", e))?;
+            let mut x = Mm(10.0);
+            // For each highlighted region, set the fill color and draw the text.
+            for (style, text) in regions {
+                let r = style.foreground.r as f32 / 255.0;
+                let g = style.foreground.g as f32 / 255.0;
+                let b = style.foreground.b as f32 / 255.0;
+                current_layer.set_fill_color(Color::Rgb(Rgb::new(r, g, b, None)));
+                current_layer.use_text(text, 8.0, x, Mm(current_y), &font);
+                // Estimate width per token (using Courier: ~4.0 mm per character).
+                let token_width = 1.7_f32 * (text.len() as f32);
+                x += Mm(token_width);
+            }
+            current_y -= 4.0;
+        }
+        current_y -= 4.0; // extra gap between files
+    }
+
+    // Save the PDF document.
+    doc.save(&mut std::io::BufWriter::new(std::fs::File::create(
+        output_file_name,
+    )?))?;
     Ok(())
 }
 
@@ -432,21 +543,21 @@ fn collect_files(
                     .unwrap_or("")
                     .to_lowercase();
 
+                // Parse the file into code chunks.
+                // (These may be multiple if the parser splits the file.)
                 let code_chunks = parse::parse_file_to_chunks(&content, &ext);
 
-                for (i, chunk) in code_chunks.into_iter().enumerate() {
-                    let rel_path = make_relative(dir, path);
-                    let effective_name = if i == 0 {
-                        rel_path.clone()
-                    } else {
-                        format!("{} (part {})", rel_path, i)
-                    };
+                // Join all chunks into a single continuous string.
+                let joined_content = code_chunks
+                    .into_iter()
+                    .map(|chunk| chunk.text)
+                    .collect::<String>();
 
-                    entries.push(FileEntry {
-                        rel_path: effective_name,
-                        content: chunk.text,
-                    });
-                }
+                let rel_path = make_relative(dir, path);
+                entries.push(FileEntry {
+                    rel_path, // No "(part)" suffixes anymore.
+                    content: joined_content,
+                });
             }
             Err(e) => {
                 if debug {
@@ -465,74 +576,4 @@ fn make_relative(base: &Path, target: &Path) -> String {
         Ok(rel) => rel.to_string_lossy().replace('\\', "/"),
         Err(_) => target.to_string_lossy().replace('\\', "/"),
     }
-}
-
-/// Stream output to stdout (no chunking, entire file in one code block)
-fn stream_markdown(files: &[FileEntry]) -> io::Result<()> {
-    let stdout = io::stdout();
-    let mut handle = stdout.lock();
-
-    writeln!(handle, "# r2md Streaming Output\n")?;
-
-    for file in files {
-        writeln!(handle, "### `{}`\n", file.rel_path)?;
-        writeln!(handle, "```")?;
-        writeln!(handle, "{}", file.content)?;
-        writeln!(handle, "```")?;
-        writeln!(handle)?;
-    }
-
-    handle.flush()
-}
-
-/// Produce a PDF with a simple text layout
-fn write_pdf_file(
-    files: &[FileEntry],
-    directories: &[PathBuf],
-    output_file_name: &str,
-) -> Result<(), Box<dyn Error>> {
-    let (doc, page1, layer1) = PdfDocument::new("r2md PDF", Mm(210.0), Mm(297.0), "Layer 1");
-    let font = doc.add_builtin_font(BuiltinFont::Courier)?;
-    let mut current_layer = doc.get_page(page1).get_layer(layer1);
-
-    let mut current_y = 270.0;
-
-    // Print a header for each directory
-    for d in directories {
-        if current_y < 20.0 {
-            let (p, l) = doc.add_page(Mm(210.0), Mm(297.0), "Layer next");
-            current_layer = doc.get_page(p).get_layer(l);
-            current_y = 270.0;
-        }
-        let text = format!("Directory: {}\n", d.display());
-        current_layer.use_text(text, 12.0, Mm(10.0), Mm(current_y), &font);
-        current_y -= 10.0;
-    }
-
-    // Then each file
-    for file in files {
-        if current_y < 20.0 {
-            let (p, l) = doc.add_page(Mm(210.0), Mm(297.0), "Layer next");
-            current_layer = doc.get_page(p).get_layer(l);
-            current_y = 270.0;
-        }
-        let heading = format!("File: {}\n", file.rel_path);
-        current_layer.use_text(heading, 10.0, Mm(10.0), Mm(current_y), &font);
-        current_y -= 6.0;
-
-        // Print the file content line by line
-        for line in file.content.lines() {
-            if current_y < 10.0 {
-                let (p, l) = doc.add_page(Mm(210.0), Mm(297.0), "Layer next");
-                current_layer = doc.get_page(p).get_layer(l);
-                current_y = 270.0;
-            }
-            current_layer.use_text(line, 8.0, Mm(10.0), Mm(current_y), &font);
-            current_y -= 4.0;
-        }
-        current_y -= 4.0; // extra gap
-    }
-
-    doc.save(&mut BufWriter::new(File::create(output_file_name)?))?;
-    Ok(())
 }
