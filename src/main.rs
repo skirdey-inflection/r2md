@@ -1,16 +1,19 @@
 use atty; // for checking if stdout is a TTY
 use clap::{Arg, ArgAction, Command};
 use ignore::WalkBuilder;
-use printpdf::{BuiltinFont, Mm, PdfDocument};
 use rayon::prelude::*;
 use serde::Deserialize;
 use serde_yaml;
 use std::error::Error;
 use std::ffi::OsStr;
 use std::fs::{self, File};
-use std::io::{self, BufWriter, Write};
+use std::io::{self, BufWriter, Cursor, Read, Write};
 use std::path::{Path, PathBuf};
-use walkdir::WalkDir; // NEW: for parallel processing
+use walkdir::WalkDir; // NEW: for parallel processing // NEW: For in-memory ZIP reading
+
+// NEW: For downloading repositories and unzipping
+use reqwest;
+use zip::ZipArchive;
 
 mod training; // at the top
 use crate::training::produce_training_json;
@@ -120,7 +123,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .about("r2md: merges code from multiple directories, streams or writes Markdown, and can optionally produce PDF.")
         .arg(
             Arg::new("paths")
-                .help("One or more directories to process")
+                .help("One or more directories or git repo URLs to process")
                 .num_args(0..)
                 .default_value(".")
         )
@@ -189,9 +192,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     let debug_mode = matches.get_flag("debug");
 
     let mut all_files = Vec::new();
-    for dir in &directories {
-        let collected = collect_files_parallel(dir, &user_ignores, &excludes, debug_mode)?;
-        all_files.extend(collected);
+    for input in &directories {
+        let input_str = input.to_string_lossy();
+        if input_str.starts_with("http://") || input_str.starts_with("https://") {
+            // NEW: Process as Git URL (download the main branch ZIP archive into memory)
+            let git_files = collect_files_from_git_url(&input_str, &user_ignores, debug_mode)?;
+            all_files.extend(git_files);
+        } else {
+            // Process as a local directory
+            let collected = collect_files_parallel(input, &user_ignores, &excludes, debug_mode)?;
+            all_files.extend(collected);
+        }
     }
 
     if streaming {
@@ -241,6 +252,125 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     Ok(())
+}
+
+fn collect_files_from_git_url(
+    url: &str,
+    user_ignores: &[String],
+    debug: bool,
+) -> Result<Vec<FileEntry>, Box<dyn Error>> {
+    // Remove trailing ".git" if present.
+    let mut base_url = url.to_string();
+    if base_url.ends_with(".git") {
+        base_url = base_url.trim_end_matches(".git").to_string();
+    }
+
+    // Closure that attempts to download the ZIP archive for a given branch.
+    let try_download = |branch: &str| -> Result<reqwest::blocking::Response, Box<dyn Error>> {
+        let download_url = if base_url.ends_with('/') {
+            format!("{}archive/refs/heads/{}.zip", base_url, branch)
+        } else {
+            format!("{}/archive/refs/heads/{}.zip", base_url, branch)
+        };
+        if debug {
+            eprintln!(
+                "Attempting to download repository ZIP from: {}",
+                download_url
+            );
+        }
+        let resp = reqwest::blocking::get(&download_url)?;
+        if resp.status().is_success() {
+            Ok(resp)
+        } else {
+            Err(format!(
+                "Failed to download repository ZIP for branch {}: {}",
+                branch,
+                resp.status()
+            )
+            .into())
+        }
+    };
+
+    // Try the "main" branch first; if that fails, try "master".
+    let response = try_download("main").or_else(|err| {
+        if debug {
+            eprintln!("Main branch download failed: {}", err);
+        }
+        try_download("master")
+    })?;
+
+    // Continue as before: read the ZIP archive from memory.
+    let bytes = response.bytes()?;
+    let reader = std::io::Cursor::new(bytes);
+    let mut archive = zip::ZipArchive::new(reader)?;
+    let mut file_entries = Vec::new();
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)?;
+        if file.is_dir() {
+            continue;
+        }
+        // The file name in the ZIP is typically in the form "repo-branch/relative/path/to/file"
+        let full_name = file.name();
+        let path = Path::new(full_name);
+        // Remove the first component (the top-level folder)
+        let mut components = path.components();
+        let _ = components.next(); // skip top-level folder
+        let rel_path = components.as_path().to_string_lossy().to_string();
+
+        // Skip large files.
+        if file.size() > DEFAULT_MAX_FILE_SIZE {
+            if debug {
+                eprintln!("Skipping large file from zip: {}", rel_path);
+            }
+            continue;
+        }
+
+        // Check extension (similar to should_skip_file).
+        let ext = Path::new(&rel_path)
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        if !RECOGNIZED_EXTENSIONS.contains(&ext.as_str()) {
+            if BINARY_FILE_EXTENSIONS.contains(&ext.as_str()) {
+                if debug {
+                    eprintln!("Skipping known binary file from zip: {}", rel_path);
+                }
+                continue;
+            }
+            if debug {
+                eprintln!(
+                    "Skipping unrecognized extension file from zip: {}",
+                    rel_path
+                );
+            }
+            continue;
+        }
+
+        // Check user ignore patterns.
+        if user_ignores.iter().any(|pat| rel_path.contains(pat)) {
+            if debug {
+                eprintln!(
+                    "Skipping file by user ignore pattern from zip: {}",
+                    rel_path
+                );
+            }
+            continue;
+        }
+
+        // Read the file content (as UTF-8 text).
+        let mut content = String::new();
+        if let Err(e) = file.read_to_string(&mut content) {
+            if debug {
+                eprintln!("Skipping unreadable file {}: {}", rel_path, e);
+            }
+            continue;
+        }
+
+        file_entries.push(FileEntry { rel_path, content });
+    }
+    Ok(file_entries)
 }
 
 fn stream_markdown(files: &[FileEntry]) -> io::Result<()> {
