@@ -2,6 +2,7 @@ use atty; // for checking if stdout is a TTY
 use clap::{Arg, ArgAction, Command};
 use ignore::WalkBuilder;
 use printpdf::{BuiltinFont, Mm, PdfDocument};
+use rayon::prelude::*;
 use serde::Deserialize;
 use serde_yaml;
 use std::error::Error;
@@ -9,7 +10,7 @@ use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
+use walkdir::WalkDir; // NEW: for parallel processing
 
 mod training; // at the top
 use crate::training::produce_training_json;
@@ -189,7 +190,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut all_files = Vec::new();
     for dir in &directories {
-        let collected = collect_files(dir, &user_ignores, &excludes, debug_mode)?;
+        let collected = collect_files_parallel(dir, &user_ignores, &excludes, debug_mode)?;
         all_files.extend(collected);
     }
 
@@ -494,18 +495,16 @@ fn is_excluded_path(path: &Path, excludes: &[PathBuf]) -> bool {
     false
 }
 
-fn collect_files(
+/// Collect files in parallel using Rayon.
+fn collect_files_parallel(
     dir: &Path,
     user_ignores: &[String],
     excludes: &[PathBuf],
     debug: bool,
 ) -> Result<Vec<FileEntry>, Box<dyn Error>> {
-    let mut entries = Vec::new();
-
     if !dir.is_dir() {
-        return Ok(entries);
+        return Ok(vec![]);
     }
-
     let walker = WalkBuilder::new(dir)
         .hidden(false)
         .follow_links(false)
@@ -514,64 +513,63 @@ fn collect_files(
         .git_exclude(false)
         .build();
 
-    for entry in walker {
-        let ent = match entry {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        let path = ent.path();
-
-        // First, check if this path or any parent is excluded
-        if is_excluded_path(path, excludes) {
-            if debug {
-                eprintln!("Skipping excluded path: {}", path.display());
+    // First, gather paths that pass our exclusion tests.
+    let paths: Vec<PathBuf> = walker
+        .filter_map(|entry| match entry {
+            Ok(ent) => {
+                let path = ent.path();
+                if is_excluded_path(path, excludes) {
+                    if debug {
+                        eprintln!("Skipping excluded path: {}", path.display());
+                    }
+                    return None;
+                }
+                if path.is_dir() && should_skip_folder(path) {
+                    return None;
+                }
+                if !path.is_dir() && should_skip_file(path, user_ignores, debug) {
+                    return None;
+                }
+                if path.is_file() {
+                    Some(path.to_path_buf())
+                } else {
+                    None
+                }
             }
-            continue;
-        }
+            Err(_) => None,
+        })
+        .collect();
 
-        // Then, if it's a folder, see if it's in the skip list
-        if path.is_dir() && should_skip_folder(path) {
-            continue;
-        }
-        // Next, skip the file if it fails our "should_skip_file" logic
-        if should_skip_file(path, user_ignores, debug) {
-            continue;
-        }
-
-        // Attempt reading the file contents
-        match fs::read_to_string(path) {
+    // Process file reading and parsing in parallel.
+    let file_entries: Vec<FileEntry> = paths
+        .par_iter()
+        .filter_map(|path| match fs::read_to_string(path) {
             Ok(content) => {
                 let ext = path
                     .extension()
                     .and_then(|s| s.to_str())
                     .unwrap_or("")
                     .to_lowercase();
-
-                // Parse the file into code chunks.
-                // (These may be multiple if the parser splits the file.)
                 let code_chunks = parse::parse_file_to_chunks(&content, &ext);
-
-                // Join all chunks into a single continuous string.
                 let joined_content = code_chunks
                     .into_iter()
                     .map(|chunk| chunk.text)
                     .collect::<String>();
-
-                let rel_path = make_relative(dir, path);
-                entries.push(FileEntry {
-                    rel_path, // No "(part)" suffixes anymore.
+                Some(FileEntry {
+                    rel_path: make_relative(dir, path),
                     content: joined_content,
-                });
+                })
             }
             Err(e) => {
                 if debug {
                     eprintln!("Skipping unreadable file {}: {}", path.display(), e);
                 }
+                None
             }
-        }
-    }
+        })
+        .collect();
 
-    Ok(entries)
+    Ok(file_entries)
 }
 
 /// Convert path->string relative to `base`, always using forward slashes
