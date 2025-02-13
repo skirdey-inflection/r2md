@@ -35,3 +35,14 @@ pub fn parse_fallback_line_based(content: &str, lang: &str) -> Vec<CodeChunk> {
 
     results
 }
+
+#[test]
+fn test_fallback_parsing() {
+    let code = r#"function foo() {}
+class MyClass {}"#; // No intervening lines
+    
+    let chunks = parse_fallback_line_based(code, "js");
+    assert_eq!(chunks.len(), 2);
+    assert!(chunks[0].text.trim().starts_with("function"));
+    assert!(chunks[1].text.trim().starts_with("class"));
+}

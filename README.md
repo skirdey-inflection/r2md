@@ -25,6 +25,16 @@ Convert the current directory into a Markdown file:
 r2md
 ```
 
+# Match specific nested files
+```
+r2md --include 'src/**/*.rs'
+```
+
+# Multiple patterns
+```
+r2md --include '*.js' --include '*.ts'
+```
+
 This will generate a `r2md_output.md` file in the current directory.
 
 ### Specify Directories

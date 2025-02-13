@@ -64,3 +64,26 @@ fn extract_snippet(source: &str, node: Node) -> String {
     let end = node.end_byte();
     source[start..end].to_string()
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_python_parsing() {
+        let code = r#"
+        class MyClass:
+            def method(self):
+                pass
+            
+        def foo():
+            print("Hello")
+        "#;
+        
+        let chunks = parse_python_tree(code);
+        assert_eq!(chunks.len(), 2);
+        assert!(chunks[0].text.contains("class MyClass"));
+        assert!(chunks[1].text.contains("def foo()"));
+    }
+}
