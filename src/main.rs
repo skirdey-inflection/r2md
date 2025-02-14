@@ -118,7 +118,7 @@ struct R2mdConfig {
 fn main() -> Result<(), Box<dyn Error>> {
     // (The unchanged CLI/argument parsing and config loading code remains here.)
     let matches = Command::new("r2md")
-        .version("0.0.9")
+        .version("0.4.0")
         .author("Stanislav Kirdey")
         .about("r2md: merges code from multiple directories, streams or writes Markdown, and can optionally produce PDF.")
         .arg(
@@ -177,7 +177,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         .unwrap_or_default()
         .map(|s| s.to_string())
         .collect();
-    
 
     // (Directory, excludes, streaming and config code unchanged)
     let directories: Vec<PathBuf> = matches
@@ -209,14 +208,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     for input in &directories {
         let input_str = input.to_string_lossy();
         if input_str.starts_with("http://") || input_str.starts_with("https://") {
-            let git_files = collect_files_from_git_url(&input_str, &user_ignores, &includes, debug_mode)?;
+            let git_files =
+                collect_files_from_git_url(&input_str, &user_ignores, &includes, debug_mode)?;
             all_files.extend(git_files);
         } else {
-            let collected = collect_files_parallel(input, &user_ignores, &excludes, &includes, debug_mode)?;
+            let collected =
+                collect_files_parallel(input, &user_ignores, &excludes, &includes, debug_mode)?;
             all_files.extend(collected);
         }
     }
-    
 
     if streaming {
         stream_markdown(&all_files)?;
@@ -231,7 +231,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             dir,
             &user_ignores,
             &includes,
-            debug_mode
+            debug_mode,
         )?);
         md_output.push_str("```\n\n");
     }
@@ -341,7 +341,7 @@ fn collect_files_from_git_url(
                     .map(|p| p.matches(&normalized_path))
                     .unwrap_or(false)
             });
-            
+
             if matches_include {
                 // Bypass all checks for included files
                 let mut content = String::new();
@@ -373,14 +373,20 @@ fn collect_files_from_git_url(
                 continue;
             }
             if debug {
-                eprintln!("Skipping unrecognized extension file from zip: {}", rel_path);
+                eprintln!(
+                    "Skipping unrecognized extension file from zip: {}",
+                    rel_path
+                );
             }
             continue;
         }
 
         if user_ignores.iter().any(|pat| rel_path.contains(pat)) {
             if debug {
-                eprintln!("Skipping file by user ignore pattern from zip: {}", rel_path);
+                eprintln!(
+                    "Skipping file by user ignore pattern from zip: {}",
+                    rel_path
+                );
             }
             continue;
         }
@@ -395,7 +401,7 @@ fn collect_files_from_git_url(
 
         file_entries.push(FileEntry { rel_path, content });
     }
-    Ok(file_entries)    
+    Ok(file_entries)
 }
 
 fn stream_markdown(files: &[FileEntry]) -> io::Result<()> {
@@ -515,7 +521,12 @@ fn load_config_file() -> Result<Option<R2mdConfig>, Box<dyn Error>> {
     Ok(None)
 }
 
-fn generate_directory_tree(dir: &Path, user_ignores: &[String], includes: &[String], debug: bool) -> Result<String, Box<dyn Error>> {
+fn generate_directory_tree(
+    dir: &Path,
+    user_ignores: &[String],
+    includes: &[String],
+    debug: bool,
+) -> Result<String, Box<dyn Error>> {
     let canonical = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
     let root_name = canonical
         .file_name()
@@ -551,7 +562,6 @@ fn generate_directory_tree(dir: &Path, user_ignores: &[String], includes: &[Stri
     Ok(output)
 }
 
-
 /// Determine if folder should be skipped (hidden or in SKIP_FOLDERS)
 fn should_skip_folder(path: &Path) -> bool {
     // Check every component in the path.
@@ -573,7 +583,7 @@ fn should_skip_folder(path: &Path) -> bool {
 fn should_skip_file(
     path: &Path,
     user_ignores: &[String],
-    includes: &[String],  // <-- add includes
+    includes: &[String], // <-- add includes
     debug: bool,
 ) -> bool {
     // (1) If the file matches an `--include` pattern, do NOT skip it.
@@ -586,7 +596,10 @@ fn should_skip_file(
         });
         if matches_include {
             if debug {
-                eprintln!("File {} matches include => not skipping extension checks", path.display());
+                eprintln!(
+                    "File {} matches include => not skipping extension checks",
+                    path.display()
+                );
             }
             return false; // file is explicitly included, so do NOT skip
         }
@@ -637,7 +650,6 @@ fn should_skip_file(
     false
 }
 
-
 fn is_excluded_path(path: &Path, excludes: &[PathBuf]) -> bool {
     // We’ll do a canonicalize on the `path` so that comparisons are consistent:
     let path_canonical = match path.canonicalize() {
@@ -687,7 +699,7 @@ fn collect_files_parallel(
                         Ok(p) => p.to_string_lossy().replace('\\', "/"),
                         Err(_) => path.to_string_lossy().replace('\\', "/"),
                     };
-                    
+
                     force_include = includes.iter().any(|pattern| {
                         glob::Pattern::new(pattern)
                             .map(|p| p.matches(&rel_path))
@@ -695,7 +707,7 @@ fn collect_files_parallel(
                     });
                 }
 
-                 // Force include matches immediately
+                // Force include matches immediately
                 if force_include {
                     return Some(path.to_path_buf());
                 }
@@ -731,7 +743,8 @@ fn collect_files_parallel(
                     .unwrap_or("")
                     .to_lowercase();
                 let code_chunks = parse::parse_file_to_chunks(&content, &ext);
-                let joined_content = code_chunks.into_iter()
+                let joined_content = code_chunks
+                    .into_iter()
                     .map(|chunk| chunk.text)
                     .collect::<String>();
 
@@ -752,8 +765,6 @@ fn collect_files_parallel(
     Ok(file_entries)
 }
 
-
-
 /// Convert path->string relative to `base`, always using forward slashes
 fn make_relative(base: &Path, target: &Path) -> String {
     match target.strip_prefix(base) {
@@ -761,8 +772,6 @@ fn make_relative(base: &Path, target: &Path) -> String {
         Err(_) => target.to_string_lossy().replace('\\', "/"),
     }
 }
-
-
 
 #[test]
 fn test_path_utilities() {
@@ -782,12 +791,12 @@ fn test_pdf_generation() -> Result<(), Box<dyn std::error::Error>> {
         rel_path: "test.rs".into(),
         content: "fn main() {}".into(),
     }];
-    
+
     let temp_file = tempfile::NamedTempFile::new()?;
     let path = temp_file.path().to_str().unwrap();
-    
+
     write_pdf_file(&files, &[PathBuf::from(".")], path)?;
     assert!(Path::new(path).exists());
-    
+
     Ok(())
 }
