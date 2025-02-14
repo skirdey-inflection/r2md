@@ -2,6 +2,8 @@
 name = "r2md"
 version = "0.4.0"
 edition = "2021"
+description = "Entire codebase to single markdown or pdf file."
+license = "MIT"
 
 [dependencies]
 ignore = "0.4.23"
