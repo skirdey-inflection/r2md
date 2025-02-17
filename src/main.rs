@@ -46,6 +46,7 @@ static RECOGNIZED_EXTENSIONS: &[&str] = &[
     "fs",  // Visual Basic
     "vb",  // Scala
     "scala",
+    "tf"
 ];
 
 /// Built-in known "binary" file extensions we skip entirely

@@ -27,6 +27,7 @@ pub fn parse_file_to_chunks(content: &str, ext: &str) -> Vec<CodeChunk> {
         "js"  => parse_javascript_tree(content),
         "ts"  => parse_typescript_tree(content),
         "java" => parse_java_tree(content),
+        "tf" => parse_fallback_line_based(content, "terraform"),
         // c++ can appear in multiple ext forms:
         "cpp" | "cc" | "cxx" | "hpp" | "hxx" | "h" 
             => parse_cpp_tree(content),
