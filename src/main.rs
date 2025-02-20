@@ -18,7 +18,6 @@ use zip::ZipArchive;
 mod training; // at the top
 use crate::training::produce_training_json;
 
-mod parse;
 mod types;
 
 use types::FileEntry;
