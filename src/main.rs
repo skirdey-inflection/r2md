@@ -118,7 +118,7 @@ struct R2mdConfig {
 fn main() -> Result<(), Box<dyn Error>> {
     // (The unchanged CLI/argument parsing and config loading code remains here.)
     let matches = Command::new("r2md")
-        .version("0.4.0")
+        .version("0.4.1")
         .author("Stanislav Kirdey")
         .about("r2md: merges code from multiple directories, streams or writes Markdown, and can optionally produce PDF.")
         .arg(
@@ -532,8 +532,8 @@ fn generate_directory_tree(
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or(".");
-
     let mut output = format!("- {}/\n", root_name);
+
     for entry in WalkDir::new(&canonical).min_depth(1) {
         let entry = match entry {
             Ok(e) => e,
@@ -541,22 +541,23 @@ fn generate_directory_tree(
         };
         let depth = entry.depth();
         let path = entry.path();
+        let rel_path = match path.strip_prefix(&canonical) {
+            Ok(p) => p.to_string_lossy().replace('\\', "/"),
+            Err(_) => path.to_string_lossy().replace('\\', "/"),
+        };
 
         if should_skip_folder(path) {
             continue;
         }
-
-        // Use your real variables: user_ignores, includes, debug
-        if !path.is_dir() && should_skip_file(path, user_ignores, includes, debug) {
+        if !path.is_dir() && should_skip_file(path, &rel_path, user_ignores, includes, debug) {
             continue;
         }
 
-        let rel = path.strip_prefix(&canonical).unwrap_or(path);
         let indent = "  ".repeat(depth);
         if entry.file_type().is_dir() {
-            output.push_str(&format!("{}- {}/\n", indent, rel.display()));
+            output.push_str(&format!("{}- {}/\n", indent, rel_path));
         } else {
-            output.push_str(&format!("{}- {}\n", indent, rel.display()));
+            output.push_str(&format!("{}- {}\n", indent, rel_path));
         }
     }
     Ok(output)
@@ -582,30 +583,27 @@ fn should_skip_folder(path: &Path) -> bool {
 
 fn should_skip_file(
     path: &Path,
+    rel_path: &str,
     user_ignores: &[String],
-    includes: &[String], // <-- add includes
+    includes: &[String],
     debug: bool,
 ) -> bool {
     // (1) If the file matches an `--include` pattern, do NOT skip it.
     if !includes.is_empty() {
-        let file_str = path.to_string_lossy();
         let matches_include = includes.iter().any(|pattern| {
             glob::Pattern::new(pattern)
-                .map(|p| p.matches(&file_str))
+                .map(|p| p.matches(rel_path))
                 .unwrap_or(false)
         });
         if matches_include {
             if debug {
-                eprintln!(
-                    "File {} matches include => not skipping extension checks",
-                    path.display()
-                );
+                eprintln!("File {} matches include => not skipping", path.display());
             }
-            return false; // file is explicitly included, so do NOT skip
+            return false;
         }
     }
 
-    // (2) Otherwise, do your usual extension, binary, size, etc. checks...
+    // (2) Otherwise, do usual checks...
     let ext = path
         .extension()
         .and_then(OsStr::to_str)
@@ -613,7 +611,6 @@ fn should_skip_file(
         .to_lowercase();
 
     if !RECOGNIZED_EXTENSIONS.contains(&ext.as_str()) {
-        // Possibly a known binary or else unrecognized
         if BINARY_FILE_EXTENSIONS.contains(&ext.as_str()) {
             if debug {
                 eprintln!("Skipping known-binary file: {}", path.display());
@@ -626,10 +623,9 @@ fn should_skip_file(
         return true;
     }
 
-    // user ignore check
-    let pstr = path.to_string_lossy().to_string();
+    // User ignore check using relative path
     for pat in user_ignores {
-        if pstr.contains(pat) {
+        if rel_path.contains(pat) {
             if debug {
                 eprintln!("Skipping file by user ignore pattern: {}", path.display());
             }
@@ -637,7 +633,7 @@ fn should_skip_file(
         }
     }
 
-    // size check
+    // Size check
     if let Ok(md) = path.metadata() {
         if md.len() > DEFAULT_MAX_FILE_SIZE {
             if debug {
@@ -691,28 +687,22 @@ fn collect_files_parallel(
         .filter_map(|entry| match entry {
             Ok(ent) => {
                 let path = ent.path();
+                let rel_path = match path.strip_prefix(dir) {
+                    Ok(p) => p.to_string_lossy().replace('\\', "/"),
+                    Err(_) => path.to_string_lossy().replace('\\', "/"),
+                };
 
-                // Check for force-inclusion via --include first
-                let mut force_include = false;
                 if !includes.is_empty() {
-                    let rel_path = match path.strip_prefix(dir) {
-                        Ok(p) => p.to_string_lossy().replace('\\', "/"),
-                        Err(_) => path.to_string_lossy().replace('\\', "/"),
-                    };
-
-                    force_include = includes.iter().any(|pattern| {
+                    let matches_include = includes.iter().any(|pattern| {
                         glob::Pattern::new(pattern)
                             .map(|p| p.matches(&rel_path))
                             .unwrap_or(false)
                     });
+                    if matches_include {
+                        return Some(path.to_path_buf());
+                    }
                 }
 
-                // Force include matches immediately
-                if force_include {
-                    return Some(path.to_path_buf());
-                }
-
-                // 2) Then your usual exclude logic
                 if is_excluded_path(path, excludes) {
                     if debug {
                         eprintln!("Skipping excluded path: {}", path.display());
@@ -722,7 +712,9 @@ fn collect_files_parallel(
                 if path.is_dir() && should_skip_folder(path) {
                     return None;
                 }
-                if !path.is_dir() && should_skip_file(path, user_ignores, includes, debug) {
+                if !path.is_dir()
+                    && should_skip_file(path, &rel_path, user_ignores, includes, debug)
+                {
                     return None;
                 }
 
@@ -732,7 +724,6 @@ fn collect_files_parallel(
         })
         .collect();
 
-    // Finally, read & parse the remaining files
     let file_entries: Vec<FileEntry> = paths
         .par_iter()
         .filter_map(|path| match fs::read_to_string(path) {
@@ -747,7 +738,6 @@ fn collect_files_parallel(
                     .into_iter()
                     .map(|chunk| chunk.text)
                     .collect::<String>();
-
                 Some(FileEntry {
                     rel_path: make_relative(dir, path),
                     content: joined_content,
