@@ -1,6 +1,6 @@
 [package]
 name = "r2md"
-version = "0.4.2"
+version = "0.4.3"
 edition = "2021"
 description = "Entire codebase to single markdown or pdf file."
 license = "MIT"
