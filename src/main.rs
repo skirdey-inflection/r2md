@@ -118,7 +118,7 @@ struct R2mdConfig {
 fn main() -> Result<(), Box<dyn Error>> {
     // (The unchanged CLI/argument parsing and config loading code remains here.)
     let matches = Command::new("r2md")
-        .version("0.4.1")
+        .version("0.4.2")
         .author("Stanislav Kirdey")
         .about("r2md: merges code from multiple directories, streams or writes Markdown, and can optionally produce PDF.")
         .arg(
@@ -224,34 +224,26 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Build the Markdown output with proper code fences.
-    let mut md_output = String::new();
-    for dir in &directories {
-        md_output.push_str("```\n");
-        md_output.push_str(&generate_directory_tree(
-            dir,
-            &user_ignores,
-            &includes,
-            debug_mode,
-        )?);
-        md_output.push_str("```\n\n");
-    }
-    md_output.push_str("## Code\n\n");
-    for file in &all_files {
-        let path = Path::new(&file.rel_path);
-        let lang = language_from_path(path);
-        let heading = format!("### `{}`\n\n", file.rel_path);
-        md_output.push_str(&heading);
-        md_output.push_str(&format!("```{}\n", lang));
-        md_output.push_str(&file.content);
-        md_output.push_str("\n```\n\n");
-    }
-
-    {
+    if !streaming {
         let mut f = BufWriter::new(File::create(output_md_file)?);
-        f.write_all(md_output.as_bytes())?;
+        for dir in &directories {
+            f.write_all(b"```\n")?;
+            generate_directory_tree(dir, &user_ignores, &includes, debug_mode, &mut f)?;
+            f.write_all(b"```\n\n")?;
+        }
+        f.write_all(b"## Code\n\n")?;
+        for file in &all_files {
+            let path = Path::new(&file.rel_path);
+            let lang = language_from_path(path);
+            let heading = format!("### `{}`\n\n", file.rel_path);
+            f.write_all(heading.as_bytes())?;
+            f.write_all(format!("```{}\n", lang).as_bytes())?;
+            f.write_all(file.content.as_bytes())?;
+            f.write_all(b"\n```\n\n")?;
+        }
         f.flush()?;
+        println!("Markdown exported to {}", output_md_file);
     }
-    println!("Markdown exported to {}", output_md_file);
 
     if produce_pdf {
         let pdf_name = if output_md_file == "r2md_output.md" {
@@ -435,7 +427,7 @@ fn write_pdf_file(
     let (doc, page1, layer1) = PdfDocument::new("r2md PDF", Mm(297.0), Mm(210.0), "Layer 1");
     let font = doc.add_builtin_font(BuiltinFont::Courier)?;
     let mut current_layer = doc.get_page(page1).get_layer(layer1);
-    let mut current_y = 210.0_f32;
+    let mut current_y = 210.0_f32 - 10_f32;
 
     // Prepare syntect’s syntax and theme sets.
     let ss = SyntaxSet::load_defaults_newlines();
@@ -521,18 +513,19 @@ fn load_config_file() -> Result<Option<R2mdConfig>, Box<dyn Error>> {
     Ok(None)
 }
 
-fn generate_directory_tree(
+fn generate_directory_tree<W: Write>(
     dir: &Path,
     user_ignores: &[String],
     includes: &[String],
     debug: bool,
-) -> Result<String, Box<dyn Error>> {
+    writer: &mut W,
+) -> Result<(), Box<dyn Error>> {
     let canonical = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
     let root_name = canonical
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or(".");
-    let mut output = format!("- {}/\n", root_name);
+    writeln!(writer, "- {}/", root_name)?;
 
     for entry in WalkDir::new(&canonical).min_depth(1) {
         let entry = match entry {
@@ -545,22 +538,19 @@ fn generate_directory_tree(
             Ok(p) => p.to_string_lossy().replace('\\', "/"),
             Err(_) => path.to_string_lossy().replace('\\', "/"),
         };
-
-        if should_skip_folder(path) {
+        if should_skip_folder(path)
+            || (!path.is_dir() && should_skip_file(path, &rel_path, user_ignores, includes, debug))
+        {
             continue;
         }
-        if !path.is_dir() && should_skip_file(path, &rel_path, user_ignores, includes, debug) {
-            continue;
-        }
-
         let indent = "  ".repeat(depth);
         if entry.file_type().is_dir() {
-            output.push_str(&format!("{}- {}/\n", indent, rel_path));
+            writeln!(writer, "{}- {}/", indent, rel_path)?;
         } else {
-            output.push_str(&format!("{}- {}\n", indent, rel_path));
+            writeln!(writer, "{}- {}", indent, rel_path)?;
         }
     }
-    Ok(output)
+    Ok(())
 }
 
 /// Determine if folder should be skipped (hidden or in SKIP_FOLDERS)
@@ -684,65 +674,43 @@ fn collect_files_parallel(
         .build();
 
     let paths: Vec<PathBuf> = walker
-        .filter_map(|entry| match entry {
-            Ok(ent) => {
-                let path = ent.path();
-                let rel_path = match path.strip_prefix(dir) {
-                    Ok(p) => p.to_string_lossy().replace('\\', "/"),
-                    Err(_) => path.to_string_lossy().replace('\\', "/"),
-                };
+        .filter_map(|entry| {
+            let ent = entry.ok()?;
+            let path = ent.path();
+            let rel_path = match path.strip_prefix(dir) {
+                Ok(p) => p.to_string_lossy().replace('\\', "/"),
+                Err(_) => path.to_string_lossy().replace('\\', "/"),
+            };
 
-                if !includes.is_empty() {
-                    let matches_include = includes.iter().any(|pattern| {
-                        glob::Pattern::new(pattern)
-                            .map(|p| p.matches(&rel_path))
-                            .unwrap_or(false)
-                    });
-                    if matches_include {
-                        return Some(path.to_path_buf());
-                    }
+            if !includes.is_empty() {
+                let matches_include = includes.iter().any(|pattern| {
+                    glob::Pattern::new(pattern)
+                        .map(|p| p.matches(&rel_path))
+                        .unwrap_or(false)
+                });
+                if matches_include {
+                    return Some(path.to_path_buf());
                 }
-
-                if is_excluded_path(path, excludes) {
-                    if debug {
-                        eprintln!("Skipping excluded path: {}", path.display());
-                    }
-                    return None;
-                }
-                if path.is_dir() && should_skip_folder(path) {
-                    return None;
-                }
-                if !path.is_dir()
-                    && should_skip_file(path, &rel_path, user_ignores, includes, debug)
-                {
-                    return None;
-                }
-
-                Some(path.to_path_buf())
             }
-            Err(_) => None,
+
+            if is_excluded_path(path, excludes)
+                || (path.is_dir() && should_skip_folder(path))
+                || (!path.is_dir()
+                    && should_skip_file(path, &rel_path, user_ignores, includes, debug))
+            {
+                return None;
+            }
+            Some(path.to_path_buf())
         })
         .collect();
 
     let file_entries: Vec<FileEntry> = paths
         .par_iter()
         .filter_map(|path| match fs::read_to_string(path) {
-            Ok(content) => {
-                let ext = path
-                    .extension()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("")
-                    .to_lowercase();
-                let code_chunks = parse::parse_file_to_chunks(&content, &ext);
-                let joined_content = code_chunks
-                    .into_iter()
-                    .map(|chunk| chunk.text)
-                    .collect::<String>();
-                Some(FileEntry {
-                    rel_path: make_relative(dir, path),
-                    content: joined_content,
-                })
-            }
+            Ok(content) => Some(FileEntry {
+                rel_path: make_relative(dir, path),
+                content,
+            }),
             Err(e) => {
                 if debug {
                     eprintln!("Skipping unreadable file {}: {}", path.display(), e);
