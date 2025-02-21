@@ -1,26 +1,23 @@
-use atty; // for checking if stdout is a TTY
+mod deps;
+mod training; // at the top
+mod types;
+
+use atty;
 use clap::{Arg, ArgAction, Command};
 use ignore::WalkBuilder;
 use rayon::prelude::*;
+use reqwest;
 use serde::Deserialize;
 use serde_yaml;
 use std::error::Error;
 use std::ffi::OsStr;
 use std::fs::{self, File};
-use std::io::{self, BufWriter, Cursor, Read, Write};
+use std::io::{self, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
-use walkdir::WalkDir; // NEW: for parallel processing // NEW: For in-memory ZIP reading
+use walkdir::WalkDir;
 
-// NEW: For downloading repositories and unzipping
-use reqwest;
-use zip::ZipArchive;
-
-mod training; // at the top
 use crate::training::produce_training_json;
-
-mod types;
-
-use types::FileEntry;
+use crate::types::FileEntry;
 
 /// Keep the original ~20 recognized language extensions (focusing on text-based code)
 static RECOGNIZED_EXTENSIONS: &[&str] = &[
@@ -117,7 +114,7 @@ struct R2mdConfig {
 fn main() -> Result<(), Box<dyn Error>> {
     // (The unchanged CLI/argument parsing and config loading code remains here.)
     let matches = Command::new("r2md")
-        .version("0.4.3")
+        .version("0.4.4")
         .author("Stanislav Kirdey")
         .about("r2md: merges code from multiple directories, streams or writes Markdown, and can optionally produce PDF.")
         .arg(
@@ -167,6 +164,13 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .long("train-json")
                 .value_name("FILE")
                 .help("Write JSON training data to FILE (prompt+completion pairs)")
+                .required(false),
+        )
+        .arg(
+            Arg::new("split-ratio")
+                .long("split-ratio")
+                .value_parser(clap::value_parser!(f64))
+                .help("Split ratio for training data (default: 0.8)")
                 .required(false),
         )
         .get_matches();
@@ -255,7 +259,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     if let Some(json_path) = matches.get_one::<String>("train-json") {
-        produce_training_json(&all_files, json_path)?;
+        let split_ratio = matches
+            .get_one::<f64>("split-ratio")
+            .copied()
+            .unwrap_or(0.8);
+        produce_training_json(&all_files, json_path, split_ratio)?;
     }
 
     Ok(())

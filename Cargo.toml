@@ -1,6 +1,6 @@
 [package]
 name = "r2md"
-version = "0.4.3"
+version = "0.4.4"
 edition = "2021"
 description = "Entire codebase to single markdown or pdf file."
 license = "MIT"
@@ -20,13 +20,14 @@ tempfile = "3.16.0"
 
 glob = "0.3.2"
 
-tiktoken-rs = "0.6.0"
+tokenizers = { version = "0.21.0", features = ["http"] }
 anyhow = "1.0.95"
 syntect = "5.2.0"
 rayon = "1.10.0"
 
 reqwest = { version = "0.12.12", features = ["blocking", "rustls-tls"] }
 zip = "2.2.2"
+petgraph = "0.7.1"
 
 [[bin]]
 name = "r2md"
