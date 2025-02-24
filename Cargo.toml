@@ -1,7 +1,9 @@
 [package]
 name = "r2md"
-version = "0.4.0"
+version = "0.4.4"
 edition = "2021"
+description = "Entire codebase to single markdown or pdf file."
+license = "MIT"
 
 [dependencies]
 ignore = "0.4.23"
@@ -13,25 +15,19 @@ atty = "0.2.14"
 serde_yaml = "0.9.34"
 serde_json = "1.0.137"
 serde = { version = "1.0.217", features = ["derive"] }
-tree-sitter = "0.24.7"
-tree-sitter-python = "0.23.6"
-tree-sitter-rust = "0.23.2"
-tree-sitter-javascript = "0.23.1"
-tree-sitter-typescript = "0.23.2"
-tree-sitter-java = "0.23.5"
-tree-sitter-cpp = "0.23.4"
 
 tempfile = "3.16.0"
 
 glob = "0.3.2"
 
-tiktoken-rs = "0.6.0"
+tokenizers = { version = "0.21.0", features = ["http"] }
 anyhow = "1.0.95"
 syntect = "5.2.0"
 rayon = "1.10.0"
 
 reqwest = { version = "0.12.12", features = ["blocking", "rustls-tls"] }
 zip = "2.2.2"
+petgraph = "0.7.1"
 
 [[bin]]
 name = "r2md"

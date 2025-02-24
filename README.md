@@ -32,7 +32,7 @@ r2md --include 'src/**/*.rs'
 
 # Multiple patterns
 ```
-r2md --include '*.js' --include '*.ts'
+r2md --include '**/*.js' --include '**/*.ts'
 ```
 
 This will generate a `r2md_output.md` file in the current directory.

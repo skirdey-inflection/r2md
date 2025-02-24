@@ -1,27 +1,23 @@
-use atty; // for checking if stdout is a TTY
+mod deps;
+mod training; // at the top
+mod types;
+
+use atty;
 use clap::{Arg, ArgAction, Command};
 use ignore::WalkBuilder;
 use rayon::prelude::*;
+use reqwest;
 use serde::Deserialize;
 use serde_yaml;
 use std::error::Error;
 use std::ffi::OsStr;
 use std::fs::{self, File};
-use std::io::{self, BufWriter, Cursor, Read, Write};
+use std::io::{self, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
-use walkdir::WalkDir; // NEW: for parallel processing // NEW: For in-memory ZIP reading
+use walkdir::WalkDir;
 
-// NEW: For downloading repositories and unzipping
-use reqwest;
-use zip::ZipArchive;
-
-mod training; // at the top
 use crate::training::produce_training_json;
-
-mod parse;
-mod types;
-
-use types::FileEntry;
+use crate::types::FileEntry;
 
 /// Keep the original ~20 recognized language extensions (focusing on text-based code)
 static RECOGNIZED_EXTENSIONS: &[&str] = &[
@@ -119,7 +115,7 @@ struct R2mdConfig {
 fn main() -> Result<(), Box<dyn Error>> {
     // (The unchanged CLI/argument parsing and config loading code remains here.)
     let matches = Command::new("r2md")
-        .version("0.4.0")
+        .version("0.4.4")
         .author("Stanislav Kirdey")
         .about("r2md: merges code from multiple directories, streams or writes Markdown, and can optionally produce PDF.")
         .arg(
@@ -169,6 +165,13 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .long("train-json")
                 .value_name("FILE")
                 .help("Write JSON training data to FILE (prompt+completion pairs)")
+                .required(false),
+        )
+        .arg(
+            Arg::new("split-ratio")
+                .long("split-ratio")
+                .value_parser(clap::value_parser!(f64))
+                .help("Split ratio for training data (default: 0.8)")
                 .required(false),
         )
         .get_matches();
@@ -225,34 +228,26 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Build the Markdown output with proper code fences.
-    let mut md_output = String::new();
-    for dir in &directories {
-        md_output.push_str("```\n");
-        md_output.push_str(&generate_directory_tree(
-            dir,
-            &user_ignores,
-            &includes,
-            debug_mode,
-        )?);
-        md_output.push_str("```\n\n");
-    }
-    md_output.push_str("## Code\n\n");
-    for file in &all_files {
-        let path = Path::new(&file.rel_path);
-        let lang = language_from_path(path);
-        let heading = format!("### `{}`\n\n", file.rel_path);
-        md_output.push_str(&heading);
-        md_output.push_str(&format!("```{}\n", lang));
-        md_output.push_str(&file.content);
-        md_output.push_str("\n```\n\n");
-    }
-
-    {
+    if !streaming {
         let mut f = BufWriter::new(File::create(output_md_file)?);
-        f.write_all(md_output.as_bytes())?;
+        for dir in &directories {
+            f.write_all(b"```\n")?;
+            generate_directory_tree(dir, &user_ignores, &includes, debug_mode, &mut f)?;
+            f.write_all(b"```\n\n")?;
+        }
+        f.write_all(b"## Code\n\n")?;
+        for file in &all_files {
+            let path = Path::new(&file.rel_path);
+            let lang = language_from_path(path);
+            let heading = format!("### `{}`\n\n", file.rel_path);
+            f.write_all(heading.as_bytes())?;
+            f.write_all(format!("```{}\n", lang).as_bytes())?;
+            f.write_all(file.content.as_bytes())?;
+            f.write_all(b"\n```\n\n")?;
+        }
         f.flush()?;
+        println!("Markdown exported to {}", output_md_file);
     }
-    println!("Markdown exported to {}", output_md_file);
 
     if produce_pdf {
         let pdf_name = if output_md_file == "r2md_output.md" {
@@ -265,7 +260,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     if let Some(json_path) = matches.get_one::<String>("train-json") {
-        produce_training_json(&all_files, json_path)?;
+        let split_ratio = matches
+            .get_one::<f64>("split-ratio")
+            .copied()
+            .unwrap_or(0.8);
+        produce_training_json(&all_files, json_path, split_ratio)?;
     }
 
     Ok(())
@@ -436,7 +435,7 @@ fn write_pdf_file(
     let (doc, page1, layer1) = PdfDocument::new("r2md PDF", Mm(297.0), Mm(210.0), "Layer 1");
     let font = doc.add_builtin_font(BuiltinFont::Courier)?;
     let mut current_layer = doc.get_page(page1).get_layer(layer1);
-    let mut current_y = 210.0_f32;
+    let mut current_y = 210.0_f32 - 10_f32;
 
     // Prepare syntect’s syntax and theme sets.
     let ss = SyntaxSet::load_defaults_newlines();
@@ -522,19 +521,20 @@ fn load_config_file() -> Result<Option<R2mdConfig>, Box<dyn Error>> {
     Ok(None)
 }
 
-fn generate_directory_tree(
+fn generate_directory_tree<W: Write>(
     dir: &Path,
     user_ignores: &[String],
     includes: &[String],
     debug: bool,
-) -> Result<String, Box<dyn Error>> {
+    writer: &mut W,
+) -> Result<(), Box<dyn Error>> {
     let canonical = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
     let root_name = canonical
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or(".");
+    writeln!(writer, "- {}/", root_name)?;
 
-    let mut output = format!("- {}/\n", root_name);
     for entry in WalkDir::new(&canonical).min_depth(1) {
         let entry = match entry {
             Ok(e) => e,
@@ -542,25 +542,23 @@ fn generate_directory_tree(
         };
         let depth = entry.depth();
         let path = entry.path();
-
-        if should_skip_folder(path) {
+        let rel_path = match path.strip_prefix(&canonical) {
+            Ok(p) => p.to_string_lossy().replace('\\', "/"),
+            Err(_) => path.to_string_lossy().replace('\\', "/"),
+        };
+        if should_skip_folder(path)
+            || (!path.is_dir() && should_skip_file(path, &rel_path, user_ignores, includes, debug))
+        {
             continue;
         }
-
-        // Use your real variables: user_ignores, includes, debug
-        if !path.is_dir() && should_skip_file(path, user_ignores, includes, debug) {
-            continue;
-        }
-
-        let rel = path.strip_prefix(&canonical).unwrap_or(path);
         let indent = "  ".repeat(depth);
         if entry.file_type().is_dir() {
-            output.push_str(&format!("{}- {}/\n", indent, rel.display()));
+            writeln!(writer, "{}- {}/", indent, rel_path)?;
         } else {
-            output.push_str(&format!("{}- {}\n", indent, rel.display()));
+            writeln!(writer, "{}- {}", indent, rel_path)?;
         }
     }
-    Ok(output)
+    Ok(())
 }
 
 /// Determine if folder should be skipped (hidden or in SKIP_FOLDERS)
@@ -583,30 +581,27 @@ fn should_skip_folder(path: &Path) -> bool {
 
 fn should_skip_file(
     path: &Path,
+    rel_path: &str,
     user_ignores: &[String],
-    includes: &[String], // <-- add includes
+    includes: &[String],
     debug: bool,
 ) -> bool {
     // (1) If the file matches an `--include` pattern, do NOT skip it.
     if !includes.is_empty() {
-        let file_str = path.to_string_lossy();
         let matches_include = includes.iter().any(|pattern| {
             glob::Pattern::new(pattern)
-                .map(|p| p.matches(&file_str))
+                .map(|p| p.matches(rel_path))
                 .unwrap_or(false)
         });
         if matches_include {
             if debug {
-                eprintln!(
-                    "File {} matches include => not skipping extension checks",
-                    path.display()
-                );
+                eprintln!("File {} matches include => not skipping", path.display());
             }
-            return false; // file is explicitly included, so do NOT skip
+            return false;
         }
     }
 
-    // (2) Otherwise, do your usual extension, binary, size, etc. checks...
+    // (2) Otherwise, do usual checks...
     let ext = path
         .extension()
         .and_then(OsStr::to_str)
@@ -614,7 +609,6 @@ fn should_skip_file(
         .to_lowercase();
 
     if !RECOGNIZED_EXTENSIONS.contains(&ext.as_str()) {
-        // Possibly a known binary or else unrecognized
         if BINARY_FILE_EXTENSIONS.contains(&ext.as_str()) {
             if debug {
                 eprintln!("Skipping known-binary file: {}", path.display());
@@ -627,10 +621,9 @@ fn should_skip_file(
         return true;
     }
 
-    // user ignore check
-    let pstr = path.to_string_lossy().to_string();
+    // User ignore check using relative path
     for pat in user_ignores {
-        if pstr.contains(pat) {
+        if rel_path.contains(pat) {
             if debug {
                 eprintln!("Skipping file by user ignore pattern: {}", path.display());
             }
@@ -638,7 +631,7 @@ fn should_skip_file(
         }
     }
 
-    // size check
+    // Size check
     if let Ok(md) = path.metadata() {
         if md.len() > DEFAULT_MAX_FILE_SIZE {
             if debug {
@@ -689,71 +682,43 @@ fn collect_files_parallel(
         .build();
 
     let paths: Vec<PathBuf> = walker
-        .filter_map(|entry| match entry {
-            Ok(ent) => {
-                let path = ent.path();
+        .filter_map(|entry| {
+            let ent = entry.ok()?;
+            let path = ent.path();
+            let rel_path = match path.strip_prefix(dir) {
+                Ok(p) => p.to_string_lossy().replace('\\', "/"),
+                Err(_) => path.to_string_lossy().replace('\\', "/"),
+            };
 
-                // Check for force-inclusion via --include first
-                let mut force_include = false;
-                if !includes.is_empty() {
-                    let rel_path = match path.strip_prefix(dir) {
-                        Ok(p) => p.to_string_lossy().replace('\\', "/"),
-                        Err(_) => path.to_string_lossy().replace('\\', "/"),
-                    };
-
-                    force_include = includes.iter().any(|pattern| {
-                        glob::Pattern::new(pattern)
-                            .map(|p| p.matches(&rel_path))
-                            .unwrap_or(false)
-                    });
-                }
-
-                // Force include matches immediately
-                if force_include {
+            if !includes.is_empty() {
+                let matches_include = includes.iter().any(|pattern| {
+                    glob::Pattern::new(pattern)
+                        .map(|p| p.matches(&rel_path))
+                        .unwrap_or(false)
+                });
+                if matches_include {
                     return Some(path.to_path_buf());
                 }
-
-                // 2) Then your usual exclude logic
-                if is_excluded_path(path, excludes) {
-                    if debug {
-                        eprintln!("Skipping excluded path: {}", path.display());
-                    }
-                    return None;
-                }
-                if path.is_dir() && should_skip_folder(path) {
-                    return None;
-                }
-                if !path.is_dir() && should_skip_file(path, user_ignores, includes, debug) {
-                    return None;
-                }
-
-                Some(path.to_path_buf())
             }
-            Err(_) => None,
+
+            if is_excluded_path(path, excludes)
+                || (path.is_dir() && should_skip_folder(path))
+                || (!path.is_dir()
+                    && should_skip_file(path, &rel_path, user_ignores, includes, debug))
+            {
+                return None;
+            }
+            Some(path.to_path_buf())
         })
         .collect();
 
-    // Finally, read & parse the remaining files
     let file_entries: Vec<FileEntry> = paths
         .par_iter()
         .filter_map(|path| match fs::read_to_string(path) {
-            Ok(content) => {
-                let ext = path
-                    .extension()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("")
-                    .to_lowercase();
-                let code_chunks = parse::parse_file_to_chunks(&content, &ext);
-                let joined_content = code_chunks
-                    .into_iter()
-                    .map(|chunk| chunk.text)
-                    .collect::<String>();
-
-                Some(FileEntry {
-                    rel_path: make_relative(dir, path),
-                    content: joined_content,
-                })
-            }
+            Ok(content) => Some(FileEntry {
+                rel_path: make_relative(dir, path),
+                content,
+            }),
             Err(e) => {
                 if debug {
                     eprintln!("Skipping unreadable file {}: {}", path.display(), e);
