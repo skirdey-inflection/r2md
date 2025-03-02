@@ -676,7 +676,7 @@ fn collect_files_parallel(
     let walker = WalkBuilder::new(dir)
         .hidden(false)
         .follow_links(false)
-        .git_ignore(true)
+        .git_ignore(if includes.is_empty() { true } else { false }) // Disable gitignore when --include is used
         .git_global(false)
         .git_exclude(false)
         .build();
